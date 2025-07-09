@@ -216,3 +216,76 @@ class GraphitiClient(BaseModel):
             f"cross_encoder={type(self.graphiti_instance.cross_encoder).__name__}"
             f")"
         )
+    
+
+def create_graphiti_client(
+    driver: Optional["GraphDriver"] = None,
+    llm_client: Optional["LLMClient"] = None,
+    embedder: Optional["EmbedderClient"] = None,
+    cross_encoder: Optional["CrossEncoderClient"] = None,
+    **kwargs,
+) -> "GraphitiClient":
+    """
+    Convenience function to create a GraphitiClient.
+
+    This function simplifies the setup process by allowing you to either pass
+    pre-configured clients or letting it create default clients (OpenAI and Neo4j)
+    based on environment variables.
+
+    Environment Variables for default clients:
+    - NEO4J_URI
+    - NEO4J_USER
+    - NEO4J_PASSWORD
+    - OPENAI_API_KEY
+
+    Args:
+        driver: A pre-configured graph database driver. If None, a Neo4jDriver
+                is created using environment variables.
+        llm_client: A pre-configured LLM client. If None, an OpenAIClient is
+                    created using environment variables.
+        embedder: A pre-configured embedder client. If None, an OpenAIEmbedder
+                  is created using environment variables.
+        cross_encoder: A pre-configured cross-encoder. If None, an
+                       OpenAIRerankerClient is created.
+        **kwargs: Additional arguments for GraphitiClient.from_connections().
+
+    Returns:
+        A configured GraphitiClient instance.
+    """
+    import os
+    from graphiti_core.driver.driver import GraphDriver
+    from graphiti_core.llm_client.client import LLMClient
+    from graphiti_core.embedder.client import EmbedderClient
+    from graphiti_core.cross_encoder.client import CrossEncoderClient
+
+    if driver is None:
+        from graphiti_core.driver.neo4j_driver import Neo4jDriver
+        uri = os.getenv("NEO4J_URI")
+        user = os.getenv("NEO4J_USER")
+        password = os.getenv("NEO4J_PASSWORD")
+        if not all([uri, user, password]):
+            raise ValueError(
+                "NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD must be set in environment "
+                "variables if a driver is not provided."
+            )
+        driver = Neo4jDriver(uri=uri, user=user, password=password)
+
+    if llm_client is None:
+        from graphiti_core.llm_client import OpenAIClient
+        llm_client = OpenAIClient() # Uses OPENAI_API_KEY from env by default
+
+    if embedder is None:
+        from graphiti_core.embedder import OpenAIEmbedder
+        embedder = OpenAIEmbedder() # Uses OPENAI_API_KEY from env by default
+
+    if cross_encoder is None:
+        from graphiti_core.cross_encoder import OpenAIRerankerClient
+        cross_encoder = OpenAIRerankerClient() # Uses OPENAI_API_KEY from env by default
+
+    return GraphitiClient.from_connections(
+        driver=driver,
+        llm_client=llm_client,
+        embedder=embedder,
+        cross_encoder=cross_encoder,
+        **kwargs,
+    )

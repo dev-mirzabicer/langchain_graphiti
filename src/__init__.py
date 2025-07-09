@@ -49,13 +49,14 @@ Example:
     ```
 """
 
-from ._client import GraphitiClient
+from ._client import GraphitiClient, create_graphiti_client
 from .retrievers import GraphitiRetriever, GraphitiSemanticRetriever  
 from .tools import (
     AddEpisodeTool,
     SearchGraphTool,
     BuildCommunitiesTool,
     RemoveEpisodeTool,
+    create_agent_tools
 )
 from .vectorstores import GraphitiVectorStore
 
@@ -67,6 +68,7 @@ __author__ = "Mirza Bicer"
 __all__ = [
     # Core client
     "GraphitiClient",
+    "create_graphiti_client",
     
     # Retrievers
     "GraphitiRetriever", 
@@ -77,7 +79,7 @@ __all__ = [
     "SearchGraphTool", 
     "BuildCommunitiesTool",
     "RemoveEpisodeTool",
-    
+    "create_agent_tools",
     # Vector store compatibility
     "GraphitiVectorStore",
     
@@ -91,78 +93,3 @@ def get_version() -> str:
     return __version__
 
 
-# Convenience functions for common setup patterns
-def create_graphiti_client(
-    neo4j_uri: str,
-    neo4j_user: str, 
-    neo4j_password: str,
-    openai_api_key: str,
-    **kwargs
-) -> GraphitiClient:
-    """
-    Convenience function to create a GraphitiClient with common OpenAI + Neo4j setup.
-    
-    Args:
-        neo4j_uri: Neo4j database URI
-        neo4j_user: Neo4j username
-        neo4j_password: Neo4j password  
-        openai_api_key: OpenAI API key
-        **kwargs: Additional arguments for GraphitiClient.from_connections()
-        
-    Returns:
-        Configured GraphitiClient instance
-        
-    Example:
-        ```python
-        client = create_graphiti_client(
-            neo4j_uri="bolt://localhost:7687",
-            neo4j_user="neo4j",
-            neo4j_password="password", 
-            openai_api_key="sk-...",
-        )
-        ```
-    """
-    from graphiti_core.driver.neo4j_driver import Neo4jDriver
-    from graphiti_core.llm_client import OpenAIClient
-    from graphiti_core.embedder import OpenAIEmbedder
-    from graphiti_core.cross_encoder import OpenAIRerankerClient
-    
-    return GraphitiClient.from_connections(
-        driver=Neo4jDriver(
-            uri=neo4j_uri,
-            user=neo4j_user,
-            password=neo4j_password
-        ),
-        llm_client=OpenAIClient(api_key=openai_api_key),
-        embedder=OpenAIEmbedder(api_key=openai_api_key),
-        cross_encoder=OpenAIRerankerClient(api_key=openai_api_key),
-        **kwargs
-    )
-
-
-def create_agent_tools(client: GraphitiClient) -> list:
-    """
-    Create a standard set of Graphiti tools for agent use.
-    
-    Args:
-        client: GraphitiClient instance
-        
-    Returns:
-        List of configured tools ready for agent use
-        
-    Example:
-        ```python
-        client = create_graphiti_client(...)
-        tools = create_agent_tools(client)
-        
-        # Use with LangGraph
-        from langgraph.prebuilt import create_react_agent
-        agent = create_react_agent(llm, tools)
-        ```
-    """
-    return [
-        AddEpisodeTool(client=client),
-        SearchGraphTool(client=client),
-        BuildCommunitiesTool(client=client),
-        RemoveEpisodeTool(client=client),
-    ]

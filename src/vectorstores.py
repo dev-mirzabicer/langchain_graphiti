@@ -24,13 +24,13 @@ from langsmith import traceable
 from pydantic import Field
 
 from ._client import GraphitiClient
-from graphiti_core.nodes import EntityNode, EpisodeType
+from graphiti_core.nodes import EpisodeType
 from graphiti_core.search.search_config_recipes import (
-    COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
     NODE_HYBRID_SEARCH_RRF,
 )
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.datetime_utils import utc_now
+from graphiti_core.utils.bulk_utils import RawEpisode
 
 
 class GraphitiVectorStore(VectorStore):
@@ -68,7 +68,7 @@ class GraphitiVectorStore(VectorStore):
             **kwargs: Additional arguments.
         """
         self.client = client
-        self.embeddings = embeddings  # For interface compatibility
+        self._embeddings = embeddings  # For interface compatibility
         self.group_id = group_id
         super().__init__(**kwargs)
 
@@ -91,28 +91,38 @@ class GraphitiVectorStore(VectorStore):
         **kwargs: Any,
     ) -> List[str]:
         """
-        Add texts to the vector store asynchronously.
+        Add texts to the vector store asynchronously by processing each text
+        as an individual episode in parallel.
+
+        This method leverages asyncio to run multiple `add_episode` calls
+        concurrently, providing a balance of performance and the ability to
+        return the specific UUID of each created episode.
 
         Args:
             texts: Iterable of text strings to add.
-            metadatas: Optional list of metadata dictionaries.
-            group_id: Optional group ID to override default.
-            **kwargs: Additional arguments.
+            metadatas: Optional list of metadata dictionaries, one for each text.
+            group_id: Optional group ID to override the default for this batch.
+            **kwargs: Additional arguments (not used by this implementation).
 
         Returns:
-            List of document IDs (episode UUIDs in Graphiti).
+            A list of document IDs (the UUIDs of the created episodes). If an
+            individual text fails to be added, it will return an empty string
+            for that entry in the list.
         """
+        from graphiti_core.helpers import semaphore_gather
+
         texts_list = list(texts)
+        if not texts_list:
+            return []
+
         metadatas = metadatas or [{}] * len(texts_list)
-        group_id = group_id or self.group_id
+        target_group_id = group_id or self.group_id
 
-        episode_ids = []
-
-        for i, text in enumerate(texts_list):
-            metadata = metadatas[i] if i < len(metadatas) else {}
+        async def _add_one_text(index: int, text: str) -> str:
+            """Helper coroutine to add a single text and handle errors."""
+            metadata = metadatas[index] if index < len(metadatas) else {}
             
-            # Extract name from metadata or generate from text
-            name = metadata.get("title", metadata.get("name", f"Document {i+1}"))
+            name = metadata.get("title", metadata.get("name", f"Document {index + 1}"))
             source_description = metadata.get(
                 "source_description", 
                 f"Added to vector store at {utc_now().isoformat()}"
@@ -125,17 +135,25 @@ class GraphitiVectorStore(VectorStore):
                     episode_body=text,
                     source_description=source_description,
                     reference_time=utc_now(),
-                    source=EpisodeType.TEXT,
-                    group_id=group_id,
-                    update_communities=False,  # Batch update later if needed
+                    source=EpisodeType.text,
+                    group_id=target_group_id,
+                    update_communities=False,  # Batch updates are more efficient
                 )
-                
-                episode_ids.append(result.episode.uuid)
-                
+                return result.episode.uuid
             except Exception as e:
-                # Log error but continue with other documents
-                print(f"Warning: Failed to add text {i}: {e}")
-                episode_ids.append(f"error_{i}")
+                # Log the error and return an empty string for this entry
+                print(f"Error adding text at index {index}: {e}")
+                return ""
+
+        # Create a list of coroutine tasks, one for each text
+        tasks = [_add_one_text(i, text) for i, text in enumerate(texts_list)]
+
+        # Execute all tasks concurrently, respecting the semaphore limit
+        # from the Graphiti instance to avoid overwhelming resources.
+        episode_ids = await semaphore_gather(
+            *tasks,
+            max_coroutines=self.client.graphiti_instance.max_coroutines
+        )
 
         return episode_ids
 
@@ -167,111 +185,12 @@ class GraphitiVectorStore(VectorStore):
         return loop.run_until_complete(self.aadd_texts(texts, metadatas, **kwargs))
 
     @traceable
-    async def asimilarity_search(
-        self,
-        query: str,
-        k: int = 4,
-        filter: Optional[Dict[str, Any]] = None,
-        group_ids: Optional[List[str]] = None,
-        **kwargs: Any,
-    ) -> List[Document]:
-        """
-        Perform similarity search asynchronously.
-
-        Args:
-            query: Query string.
-            k: Number of results to return.
-            filter: Optional metadata filter (not implemented yet).
-            group_ids: Optional list of group IDs to search within.
-            **kwargs: Additional arguments.
-
-        Returns:
-            List of similar documents.
-        """
-        # Use a simplified search config focused on nodes
-        search_config = NODE_HYBRID_SEARCH_RRF
-        search_config.limit = k
-
-        group_ids = group_ids or ([self.group_id] if self.group_id else None)
-
-        search_results = await self.client.graphiti_instance.search_(
-            query=query,
-            config=search_config,
-            group_ids=group_ids,
-            search_filter=SearchFilters(),  # TODO: Convert filter dict to SearchFilters
-        )
-
-        documents = []
-
-        # Convert nodes to documents
-        for node in search_results.nodes:
-            metadata = {
-                "source": "graphiti_node",
-                "node_uuid": node.uuid,
-                "node_name": node.name,
-                "node_labels": node.labels,
-                "group_id": node.group_id,
-                "created_at": node.created_at.isoformat(),
-                **node.attributes,
-            }
-            
-            content = f"**{node.name}**\n\n{node.summary}" if node.summary else node.name
-            documents.append(Document(page_content=content, metadata=metadata))
-
-        # Convert edges to documents if no nodes found
-        if not documents:
-            for edge in search_results.edges[:k]:
-                metadata = {
-                    "source": "graphiti_edge",
-                    "edge_uuid": edge.uuid,
-                    "edge_name": edge.name,
-                    "source_node_uuid": edge.source_node_uuid,
-                    "target_node_uuid": edge.target_node_uuid,
-                    "group_id": edge.group_id,
-                    "created_at": edge.created_at.isoformat(),
-                    **edge.attributes,
-                }
-                
-                content = f"[{edge.name}] {edge.fact}"
-                documents.append(Document(page_content=content, metadata=metadata))
-
-        return documents[:k]
-
-    def similarity_search(
-        self,
-        query: str,
-        k: int = 4,
-        filter: Optional[Dict[str, Any]] = None,
-        **kwargs: Any,
-    ) -> List[Document]:
-        """
-        Perform similarity search synchronously.
-
-        Args:
-            query: Query string.
-            k: Number of results to return.
-            filter: Optional metadata filter.
-            **kwargs: Additional arguments.
-
-        Returns:
-            List of similar documents.
-        """
-        import asyncio
-        
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-        return loop.run_until_complete(self.asimilarity_search(query, k, filter, **kwargs))
-
-    @traceable
     async def asimilarity_search_with_score(
         self,
         query: str,
         k: int = 4,
         filter: Optional[Dict[str, Any]] = None,
+        group_ids: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> List[Tuple[Document, float]]:
         """
@@ -281,17 +200,27 @@ class GraphitiVectorStore(VectorStore):
             query: Query string.
             k: Number of results to return.
             filter: Optional metadata filter.
+            group_ids: Optional list of group IDs to restrict the search to.
             **kwargs: Additional arguments.
 
         Returns:
             List of (document, score) tuples.
         """
-        documents = await self.asimilarity_search(query, k, filter, **kwargs)
+        from .retrievers import GraphitiRetriever
+
+        # Use the retriever to get properly scored and formatted documents
+        retriever = GraphitiRetriever(
+            client=self.client,
+            config=NODE_HYBRID_SEARCH_RRF,
+            search_mode="nodes", # Vectorstores typically map to nodes/entities
+            group_ids=group_ids or ([self.group_id] if self.group_id else None),
+            search_filter=SearchFilters(**filter) if filter else SearchFilters(),
+        )
+        retriever.config.limit = k
+
+        documents = await retriever._aget_relevant_documents(query, run_manager=None)
         
-        # Graphiti doesn't expose raw similarity scores in the current API
-        # So we return a dummy score. In a real implementation, this would
-        # require extending Graphiti's search API to return scores.
-        return [(doc, 1.0) for doc in documents]
+        return [(doc, doc.metadata.get("score", 0.0)) for doc in documents]
 
     def similarity_search_with_score(
         self,
@@ -311,6 +240,7 @@ class GraphitiVectorStore(VectorStore):
 
         Returns:
             List of (document, score) tuples.
+        
         """
         import asyncio
         
@@ -323,6 +253,54 @@ class GraphitiVectorStore(VectorStore):
         return loop.run_until_complete(
             self.asimilarity_search_with_score(query, k, filter, **kwargs)
         )
+
+    async def asimilarity_search(
+        self,
+        query: str,
+        k: int = 4,
+        filter: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> List[Document]:
+        """
+        Perform similarity search asynchronously.
+
+        Args:
+            query: Query string.
+            k: Number of results to return.
+            filter: Optional metadata filter.
+            **kwargs: Additional arguments.
+
+        Returns:
+            List of documents matching the query.
+        """
+        results_with_scores = await self.asimilarity_search_with_score(
+            query, k, filter, **kwargs
+        )
+        return [doc for doc, score in results_with_scores]
+
+    def similarity_search(
+        self,
+        query: str,
+        k: int = 4,
+        filter: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> List[Document]:
+        """
+        Perform similarity search synchronously.
+
+        Args:
+            query: Query string.
+            k: Number of results to return.
+            filter: Optional metadata filter.
+            **kwargs: Additional arguments.
+
+        Returns:
+            List of documents matching the query.
+        """
+        results_with_scores = self.similarity_search_with_score(
+            query, k, filter, **kwargs
+        )
+        return [doc for doc, score in results_with_scores]
 
     @classmethod
     def from_texts(
@@ -337,14 +315,14 @@ class GraphitiVectorStore(VectorStore):
         Create a GraphitiVectorStore from a list of texts.
 
         Args:
-            texts: List of text documents.
-            embedding: Embeddings instance (for compatibility).
-            metadatas: Optional list of metadata dictionaries.
-            client: GraphitiClient instance.
+            texts: List of text strings to add.
+            embedding: Embeddings instance (not used directly, as Graphiti handles embeddings internally).
+            metadatas: Optional list of metadata dictionaries, one for each text.
+            client: GraphitiClient instance to use.
             **kwargs: Additional arguments.
 
         Returns:
-            A new GraphitiVectorStore instance with texts added.
+            A new instance of GraphitiVectorStore populated with the provided texts.
         """
         if client is None:
             raise ValueError("GraphitiClient must be provided")
@@ -356,13 +334,14 @@ class GraphitiVectorStore(VectorStore):
     def delete(self, ids: Optional[List[str]] = None, **kwargs: Any) -> Optional[bool]:
         """
         Delete documents by IDs.
+        Note: This assumes IDs are episode UUIDs.
 
         Args:
-            ids: List of document IDs (episode UUIDs) to delete.
-            **kwargs: Additional arguments.
+            ids: List of episode UUIDs to delete.
+            **kwargs: Additional arguments (not used by this implementation).
 
         Returns:
-            True if successful, False otherwise.
+            True if deletion was successful, False otherwise.
         """
         if not ids:
             return False
@@ -377,10 +356,11 @@ class GraphitiVectorStore(VectorStore):
             
         async def _delete():
             try:
-                for episode_id in ids:
-                    await self.client.graphiti_instance.remove_episode(episode_id)
+                tasks = [self.client.graphiti_instance.remove_episode(episode_id) for episode_id in ids]
+                await asyncio.gather(*tasks)
                 return True
-            except Exception:
+            except Exception as e:
+                print(f"Error during delete: {e}")
                 return False
                 
         return loop.run_until_complete(_delete())

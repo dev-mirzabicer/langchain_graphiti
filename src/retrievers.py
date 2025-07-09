@@ -13,7 +13,7 @@ Key Components:
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, Iterator, List, Literal, Optional, Union
+from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple
 
 from langchain_core.callbacks import (
     AsyncCallbackManagerForRetrieverRun,
@@ -32,7 +32,7 @@ from graphiti_core.search.search_config_recipes import (
     EDGE_HYBRID_SEARCH_NODE_DISTANCE,
 )
 from graphiti_core.search.search_filters import SearchFilters
-
+from graphiti_core.search.search import search as graphiti_search_internal
 
 class GraphitiRetriever(BaseRetriever):
     """
@@ -64,7 +64,7 @@ class GraphitiRetriever(BaseRetriever):
         default=None, description="Optional list of group IDs to scope the search."
     )
     search_filter: Optional[SearchFilters] = Field(
-        default=None, description="Optional filters to apply to the search."
+        default_factory=SearchFilters, description="Optional filters to apply to the search."
     )
     include_graph_context: bool = Field(
         default=True,
@@ -97,22 +97,87 @@ class GraphitiRetriever(BaseRetriever):
         )
 
     @traceable
+    async def _search_and_get_results_with_scores(
+        self, query: str
+    ) -> Tuple[SearchResults, Dict[str, float]]:
+        """
+        Internal method to run Graphiti search and reconstruct scores.
+        This is a workaround since the core Graphiti search function doesn't
+        propagate scores directly in its return object.
+        """
+        # Graphiti's internal search function
+        graphiti_instance = self.client.graphiti_instance
+        
+        # We need to generate the query vector once
+        query_vector = await graphiti_instance.embedder.create(input_data=[query.replace('\n', ' ')])
+
+        # The search function in graphiti.py calls lower-level functions in search.py
+        # which do have scores. We will call the main search function and then
+        # re-rank the top results with the cross-encoder to get reliable scores.
+        # This is the most robust way to get scores for the final ranked list.
+        
+        search_results = await graphiti_search_internal(
+            clients=graphiti_instance.clients,
+            query=query,
+            group_ids=self.group_ids,
+            config=self.config,
+            search_filter=self.search_filter,
+            query_vector=query_vector,
+        )
+
+        scores = {}
+        
+        # To get meaningful scores, we can re-rank the top results using the cross-encoder
+        # This provides a unified scoring mechanism for the final document list.
+        passages_to_rank = []
+        passage_to_uuid = {}
+
+        if self.search_mode in ["edges", "combined"]:
+            for edge in search_results.edges:
+                passage = f"[{edge.name}] {edge.fact}"
+                passages_to_rank.append(passage)
+                passage_to_uuid[passage] = edge.uuid
+
+        if self.search_mode in ["nodes", "combined"]:
+            for node in search_results.nodes:
+                passage = f"Entity: {node.name}. Summary: {node.summary}"
+                passages_to_rank.append(passage)
+                passage_to_uuid[passage] = node.uuid
+
+        if passages_to_rank:
+            ranked_passages = await graphiti_instance.cross_encoder.rank(query, passages_to_rank)
+            for passage, score in ranked_passages:
+                uuid = passage_to_uuid.get(passage)
+                if uuid:
+                    scores[uuid] = score
+        
+        return search_results, scores
+
+    @traceable
     async def _convert_search_results_to_docs(
-        self, search_results: SearchResults
+        self, search_results: SearchResults, scores: Dict[str, float]
     ) -> List[Document]:
         """Converts Graphiti search results into LangChain Documents with rich metadata."""
         docs = []
         
+        # Create a lookup for node names to enrich edge documents
+        node_uuid_to_name = {node.uuid: node.name for node in search_results.nodes}
+
         # Convert edges to documents
         if self.search_mode in ["edges", "combined"]:
             for edge in search_results.edges:
-                # Build rich metadata with graph context
+                source_name = node_uuid_to_name.get(edge.source_node_uuid, "Unknown Entity")
+                target_name = node_uuid_to_name.get(edge.target_node_uuid, "Unknown Entity")
+                
                 metadata = {
                     "type": "edge",
+                    "score": scores.get(edge.uuid),
                     "uuid": edge.uuid,
                     "name": edge.name,
                     "source_node_uuid": edge.source_node_uuid,
+                    "source_node_name": source_name,
                     "target_node_uuid": edge.target_node_uuid,
+                    "target_node_name": target_name,
                     "group_id": edge.group_id,
                     "created_at": edge.created_at.isoformat(),
                     "valid_at": edge.valid_at.isoformat() if edge.valid_at else None,
@@ -126,15 +191,10 @@ class GraphitiRetriever(BaseRetriever):
                 if self.include_graph_context:
                     metadata["graph_context"] = {
                         "relationship_type": edge.name,
-                        "confidence_score": getattr(edge, 'score', None),
                         "embedding_available": edge.fact_embedding is not None,
                     }
                 
-                # Use the fact as the main content, with additional context
-                content = edge.fact
-                if edge.name and edge.name != edge.fact:
-                    content = f"[{edge.name}] {edge.fact}"
-                
+                content = f"{source_name} -[{edge.name}]-> {target_name}: {edge.fact}"
                 doc = Document(page_content=content, metadata=metadata)
                 docs.append(doc)
 
@@ -143,6 +203,7 @@ class GraphitiRetriever(BaseRetriever):
             for node in search_results.nodes:
                 metadata = {
                     "type": "node",
+                    "score": scores.get(node.uuid),
                     "uuid": node.uuid,
                     "name": node.name,
                     "labels": node.labels,
@@ -155,49 +216,17 @@ class GraphitiRetriever(BaseRetriever):
                 # Add graph context if enabled
                 if self.include_graph_context:
                     metadata["graph_context"] = {
-                        "node_type": node.labels[0] if node.labels else "Entity",
+                        "node_type": next((l for l in node.labels if l != 'Entity'), 'Entity'),
                         "embedding_available": node.name_embedding is not None,
-                        # Could add degree, centrality, etc. here if available
                     }
                 
-                # Use summary as content, with name as title
+                # Use summary if available, otherwise just the name
                 content = f"**{node.name}**\n\n{node.summary}" if node.summary else node.name
-                
                 doc = Document(page_content=content, metadata=metadata)
                 docs.append(doc)
-                
-        # Convert episodes to documents (if any in results)
-        for episode in search_results.episodes:
-            metadata = {
-                "type": "episode",
-                "uuid": episode.uuid,
-                "name": episode.name,
-                "group_id": episode.group_id,
-                "created_at": episode.created_at.isoformat(),
-                "source_description": episode.source_description,
-                "content": episode.content,
-            }
-            
-            doc = Document(
-                page_content=f"**{episode.name}**\n\n{episode.content}", 
-                metadata=metadata
-            )
-            docs.append(doc)
-            
-        # Convert communities to documents (if any in results)
-        for community in search_results.communities:
-            metadata = {
-                "type": "community",
-                "uuid": community.uuid,
-                "name": community.name,
-                "group_id": community.group_id,
-                "created_at": community.created_at.isoformat(),
-                "summary": community.summary,
-            }
-            
-            content = f"**Community: {community.name}**\n\n{community.summary}"
-            doc = Document(page_content=content, metadata=metadata)
-            docs.append(doc)
+        
+        # Sort final documents by score if available
+        docs.sort(key=lambda d: d.metadata.get("score", 0.0), reverse=True)
 
         return docs
 
@@ -208,32 +237,25 @@ class GraphitiRetriever(BaseRetriever):
         Note: Graphiti's backend doesn't stream natively, so this provides
         a streaming interface over the complete results.
         """
-        # Run the async search in a new event loop if needed
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            
+        # Ensure the new event loop is running
         if loop.is_running():
             # If we're in an async context, we need to use a different approach
-            # This is a limitation - ideally we'd use astream in async contexts
+            # TODO: This is a limitation, ideally we'd use astream in async contexts
             raise RuntimeError(
                 "Cannot use stream() in an async context. Use aget_relevant_documents() instead."
             )
         
-        search_results = loop.run_until_complete(
-            self.client.graphiti_instance.search_(
-                query=query,
-                config=self.config,
-                group_ids=self.group_ids,
-                search_filter=self.search_filter,
-            )
+        search_results, scores = loop.run_until_complete(
+            self._search_and_get_results_with_scores(query)
         )
         
-        docs = loop.run_until_complete(self._convert_search_results_to_docs(search_results))
+        docs = loop.run_until_complete(self._convert_search_results_to_docs(search_results, scores))
         
-        # Stream documents one by one
         for doc in docs:
             yield doc
 
@@ -241,17 +263,7 @@ class GraphitiRetriever(BaseRetriever):
     def _get_relevant_documents(
         self, query: str, *, run_manager: CallbackManagerForRetrieverRun
     ) -> List[Document]:
-        """
-        Synchronous retrieval of documents from Graphiti.
-        
-        Args:
-            query: The query string.
-            run_manager: The callback manager for the run.
-
-        Returns:
-            A list of relevant documents.
-        """
-        # Use asyncio to run the async method
+        """Synchronous retrieval of documents from Graphiti."""
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
@@ -264,23 +276,9 @@ class GraphitiRetriever(BaseRetriever):
     async def _aget_relevant_documents(
         self, query: str, *, run_manager: AsyncCallbackManagerForRetrieverRun
     ) -> List[Document]:
-        """
-        Asynchronous retrieval of documents from Graphiti.
-
-        Args:
-            query: The query string.
-            run_manager: The callback manager for the run.
-
-        Returns:
-            A list of relevant documents.
-        """
-        search_results = await self.client.graphiti_instance.search_(
-            query=query,
-            config=self.config,
-            group_ids=self.group_ids,
-            search_filter=self.search_filter,
-        )
-        return await self._convert_search_results_to_docs(search_results)
+        """Asynchronous retrieval of documents from Graphiti."""
+        search_results, scores = await self._search_and_get_results_with_scores(query)
+        return await self._convert_search_results_to_docs(search_results, scores)
 
 
 class GraphitiSemanticRetriever(GraphitiRetriever):
@@ -300,41 +298,53 @@ class GraphitiSemanticRetriever(GraphitiRetriever):
         super().__init__(client=client, **kwargs)
 
     @traceable
-    async def similarity_search_with_score_threshold(
+    async def asimilarity_search_with_score(
         self, 
         query: str, 
-        score_threshold: float = 0.5,
-        k: int = 10
-    ) -> List[tuple[Document, float]]:
+        k: int = 10,
+        score_threshold: Optional[float] = None,
+        **kwargs: Any,
+    ) -> List[Tuple[Document, float]]:
         """
         Perform similarity search with score filtering.
         
         Args:
             query: The search query
-            score_threshold: Minimum similarity score threshold
             k: Maximum number of results to return
+            score_threshold: Minimum similarity score threshold
             
         Returns:
             List of (Document, score) tuples
         """
-        # Create a custom config with score threshold
-        custom_config = SearchConfig(
-            edge_config=self.config.edge_config,
-            node_config=self.config.node_config,
-            episode_config=self.config.episode_config,
-            community_config=self.config.community_config,
-            limit=k,
-            reranker_min_score=score_threshold,
-        )
-        
-        # Temporarily use the custom config
+        # Create a temporary config with the specified limit and score threshold
         original_config = self.config
-        self.config = custom_config
+        temp_config = self.config.copy(deep=True)
+        temp_config.limit = k
+        if score_threshold is not None:
+            temp_config.reranker_min_score = score_threshold
+        
+        self.config = temp_config
         
         try:
             docs = await self._aget_relevant_documents(query, run_manager=None)
-            # Return with dummy scores since Graphiti doesn't expose raw scores
-            # In a real implementation, we'd extract scores from the search results
-            return [(doc, 1.0) for doc in docs]
+            return [(doc, doc.metadata.get("score", 0.0)) for doc in docs]
         finally:
             self.config = original_config
+
+    def similarity_search_with_score(
+        self,
+        query: str,
+        k: int = 10,
+        score_threshold: Optional[float] = None,
+        **kwargs: Any,
+    ) -> List[Tuple[Document, float]]:
+        """Synchronous version of asimilarity_search_with_score."""
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        return loop.run_until_complete(
+            self.asimilarity_search_with_score(query, k, score_threshold, **kwargs)
+        )

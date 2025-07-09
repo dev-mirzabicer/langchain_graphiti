@@ -28,6 +28,7 @@ from graphiti_core.search.search_helpers import search_results_to_context_string
 from graphiti_core.search.search_config_recipes import (
     COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
 )
+from graphiti_core.errors import GroupIdValidationError, EntityTypeValidationError
 
 
 # --- AddEpisodeTool ---
@@ -133,7 +134,6 @@ class AddEpisodeTool(BaseTool):
                 update_communities=update_communities,
             )
             
-            # Provide rich feedback about what was added
             node_count = len(results.nodes)
             edge_count = len(results.edges)
             episode_uuid = results.episode.uuid
@@ -144,12 +144,15 @@ class AddEpisodeTool(BaseTool):
                 f"{'Communities were updated. ' if update_communities else ''}"
                 f"The knowledge graph now contains this new information and can be queried."
             )
+        except (GroupIdValidationError, EntityTypeValidationError) as e:
+            # Catch specific validation errors from Graphiti
+            return f"❌ Validation Error: {str(e)}. Please correct the input and try again."
         except Exception as e:
-            # Provide helpful error information for debugging
+            # General fallback for other errors
             return (
                 f"❌ Failed to add episode to knowledge graph. "
                 f"Error: {type(e).__name__}: {str(e)}. "
-                f"Please check the episode content format and try again."
+                f"Please check the episode content and parameters and try again."
             )
 
 
@@ -412,3 +415,31 @@ class RemoveEpisodeTool(BaseTool):
                 f"❌ Error during episode removal: {type(e).__name__}: {str(e)}. "
                 f"Please check the episode UUIDs and try again."
             )
+
+
+def create_agent_tools(client: GraphitiClient) -> list:
+    """
+    Create a standard set of Graphiti tools for agent use.
+    
+    Args:
+        client: GraphitiClient instance
+        
+    Returns:
+        List of configured tools ready for agent use
+        
+    Example:
+        ```python
+        client = create_graphiti_client(...)
+        tools = create_agent_tools(client)
+        
+        # Use with LangGraph
+        from langgraph.prebuilt import create_react_agent
+        agent = create_react_agent(llm, tools)
+        ```
+    """
+    return [
+        AddEpisodeTool(client=client),
+        SearchGraphTool(client=client),
+        BuildCommunitiesTool(client=client),
+        RemoveEpisodeTool(client=client),
+    ]
