@@ -1,4 +1,0 @@
-langchain-core
-graphiti-core[google-genai]
-pydantic>=2.0
-langsmith

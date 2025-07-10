@@ -8,7 +8,7 @@ readme = "README.md"
 packages = [{include = "langchain_graphiti", from = "src"}]
 homepage = "https://github.com/dev-mirzabicer/langchain_graphiti"
 repository = "https://github.com/dev-mirzabicer/langchain_graphiti"
-keywords = ["langchain", "graphiti", "knowledge graph", "retriever", "tools"]
+keywords = ["langchain", "langgraph", "graphiti", "knowledge graph", "retriever"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
  
- [tool.poetry.dependencies]
+[tool.poetry.dependencies]
 python = ">=3.10, <3.14"
 langchain-core = "*"
 graphiti-core = "*"
