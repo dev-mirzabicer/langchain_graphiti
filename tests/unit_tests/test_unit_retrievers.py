@@ -119,13 +119,20 @@ class TestGraphitiRetrieverUnit:
         )
 
         # Test astream
-        astream_docs = [doc async for doc in retriever.astream(query)]
+        # Test astream
+        astream_results = [docs async for docs in retriever.astream(query)]
+        assert len(astream_results) == 1
+        astream_docs = astream_results[0]
         assert len(astream_docs) == 2
         assert astream_docs[0].page_content == "First stream doc"
+        assert astream_docs[1].page_content == "Second stream doc"
 
         # Test stream
-        stream_docs = list(retriever.stream(query))
+        stream_results = list(retriever.stream(query))
+        assert len(stream_results) == 1
+        stream_docs = stream_results[0]
         assert len(stream_docs) == 2
+        assert stream_docs[0].page_content == "First stream doc"
         assert stream_docs[1].page_content == "Second stream doc"
 
     @pytest.mark.asyncio
