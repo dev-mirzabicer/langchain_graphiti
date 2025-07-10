@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, AsyncGenerator, Optional, Dict, Type, Union
+from typing import Any, AsyncGenerator, Optional, Dict, Tuple, Type, Union
 from contextlib import asynccontextmanager
 import weakref
 import importlib

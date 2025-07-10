@@ -120,11 +120,16 @@ def test_factory_create_openai_neo4j(mock_import):
     MockOpenAIRerankerClient = MagicMock()
 
     def import_side_effect(module, class_name, extra):
-        if class_name == "Neo4jDriver": return MockNeo4jDriver
-        if class_name == "OpenAIClient": return MockOpenAIClient
-        if class_name == "OpenAIEmbedder": return MockOpenAIEmbedder
-        if class_name == "OpenAIRerankerClient": return MockOpenAIRerankerClient
-        if class_name in ["LLMConfig", "OpenAIEmbedderConfig"]: return MagicMock()
+        if class_name == "Neo4jDriver":
+            return MockNeo4jDriver
+        if class_name == "OpenAIClient":
+            return MockOpenAIClient
+        if class_name == "OpenAIEmbedder":
+            return MockOpenAIEmbedder
+        if class_name == "OpenAIRerankerClient":
+            return MockOpenAIRerankerClient
+        if class_name in ["LLMConfig", "OpenAIEmbedderConfig"]:
+            return MagicMock()
         return MagicMock()
 
     mock_import.side_effect = import_side_effect
