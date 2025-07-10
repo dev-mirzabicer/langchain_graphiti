@@ -77,39 +77,43 @@ class AddEpisodeSchema(BaseModel):
 
     name: str = Field(
         ...,
-        description="A descriptive name for the episode or event being recorded.",
+        description="A short, descriptive title for the piece of information. E.g., 'Project Phoenix Kickoff Meeting', 'Customer Support Ticket #1234', 'Q3 Sales Report Summary'.",
     )
     episode_body: str = Field(
         ...,
         description=(
-            "The main content of the episode, such as a conversation transcript, "
-            "a document's text, or a JSON data string."
+            "The full content to be added to the knowledge graph. This can be a user's message, "
+            "a document excerpt, meeting transcript, email content, or any structured text that "
+            "contains factual information to be extracted and stored."
         ),
     )
     source_description: str = Field(
         ...,
         description=(
-            "A brief description of the information's origin "
-            "(e.g., 'User conversation on 2024-08-15', 'Q2 2025 Financial Report')."
+            "A brief description of where this information came from and when it was created. "
+            "Examples: 'User conversation on 2024-08-15', 'Q2 2025 Financial Report', "
+            "'Email from john@company.com on 2024-03-10', 'Meeting notes from team standup'."
         ),
     )
     group_id: str = Field(
         default="",
         description=(
-            "An optional ID to partition the graph. All related information should "
-            "share the same group_id for multi-tenant applications."
+            "An optional identifier to logically separate different knowledge domains or tenants. "
+            "Use the same group_id for all related information that should be searched together. "
+            "Leave empty for single-tenant applications or when all data should be in one graph."
         ),
     )
     source: str = Field(
         default="message",
         description=(
-            "The type of the episode content. Must be one of 'message', 'text', "
-            "or 'json'."
+            "The format/type of the episode content. Choose from: 'message' (conversational text), "
+            "'text' (documents, articles, reports), or 'json' (structured data). This helps "
+            "Graphiti optimize processing for different content types."
         ),
     )
     update_communities: bool = Field(
         default=False,
-        description="Whether to update community structures after adding this episode.",
+        description="Whether to immediately update community detection after adding this episode. Set to True for important information that should immediately influence graph organization, False for batch processing.",
     )
 
 
@@ -199,15 +203,15 @@ class SearchGraphSchema(BaseModel):
 
     query: str = Field(
         ...,
-        description="The natural language query to search for in the knowledge graph.",
+        description="A natural language question or topic to search for in the knowledge graph. Examples: 'What did John say about the project timeline?', 'Find information about customer complaints', 'Show me details about the Q3 budget meeting'.",
     )
     group_ids: Optional[List[str]] = Field(
         default=None,
-        description="Optional list of group IDs to scope the search.",
+        description="Optional list of group IDs to limit the search scope. Use this to search within specific knowledge domains or tenant data. Leave empty to search across all available data.",
     )
     max_results: int = Field(
         default=10,
-        description="Maximum number of results to return (1-50).",
+        description="Maximum number of search results to return. Higher values provide more comprehensive results but may include less relevant information. Range: 1-50.",
         ge=1,
         le=50,
     )
@@ -365,7 +369,7 @@ class RemoveEpisodeSchema(BaseModel):
 
     episode_uuids: List[str] = Field(
         ...,
-        description="List of episode UUIDs to remove from the knowledge graph.",
+        description="List of episode UUIDs to permanently remove from the knowledge graph. These are the unique identifiers returned when episodes were originally added. Warning: This action cannot be undone and will also remove associated entities and relationships that are no longer supported.",
     )
 
 
@@ -456,31 +460,31 @@ class AddTripletSchema(BaseModel):
 
     source_node_name: str = Field(
         ...,
-        description="Name of the source entity node.",
+        description="Name of the source entity in the relationship. Examples: 'John Smith', 'Apple Inc.', 'Project Phoenix', 'Q3 Budget Meeting'.",
     )
     source_node_labels: List[str] = Field(
         default=["Entity"],
-        description="Labels for the source node (default: ['Entity']).",
+        description="Semantic labels/categories for the source entity. Examples: ['Person'], ['Company', 'Organization'], ['Project'], ['Meeting', 'Event']. Default: ['Entity'].",
     )
     edge_name: str = Field(
         ...,
-        description="Name/type of the relationship edge.",
+        description="The type or name of the relationship connecting the entities. Examples: 'WORKS_FOR', 'MANAGES', 'ATTENDED', 'LOCATED_IN', 'OWNS'.",
     )
     edge_fact: str = Field(
         ...,
-        description="Descriptive fact about the relationship.",
+        description="A descriptive statement about this specific relationship instance. Examples: 'John has been the project manager since March 2024', 'Apple Inc. acquired the startup for $2.1B', 'Meeting discussed budget allocation for Q4'.",
     )
     target_node_name: str = Field(
         ...,
-        description="Name of the target entity node.",
+        description="Name of the target entity in the relationship. Examples: 'Microsoft Corporation', 'Sarah Johnson', 'San Francisco Office', 'Marketing Campaign'.",
     )
     target_node_labels: List[str] = Field(
         default=["Entity"],
-        description="Labels for the target node (default: ['Entity']).",
+        description="Semantic labels/categories for the target entity. Examples: ['Person'], ['Company', 'Organization'], ['Location'], ['Campaign', 'Marketing']. Default: ['Entity'].",
     )
     group_id: str = Field(
         default="",
-        description="Optional group ID to partition the graph.",
+        description="Optional identifier to logically separate this triplet into a specific knowledge domain or tenant. Use the same group_id for related information.",
     )
 
 
@@ -680,22 +684,43 @@ class BuildIndicesAndConstraintsTool(GraphitiBaseTool):
 
 def create_agent_tools(client: GraphitiClient) -> list:
     """
-    Create a comprehensive set of Graphiti tools for agent use.
+    Create a comprehensive set of Graphiti tools for full-featured agent use.
+    
+    This factory function provides all available Graphiti tools, making it suitable
+    for agents that need complete knowledge graph capabilities including content
+    management, search, graph manipulation, and database optimization.
+    
+    Included Tools:
+    - AddEpisodeTool: Add new information to the knowledge graph
+    - SearchGraphTool: Query the graph for relevant information
+    - BuildCommunitiesTool: Organize graph structure through community detection
+    - RemoveEpisodeTool: Remove specific episodes and cleanup associated data
+    - AddTripletTool: Directly add structured relationships to the graph
+    - GetNodesAndEdgesByEpisodeTool: Retrieve graph elements for specific episodes
+    - BuildIndicesAndConstraintsTool: Optimize database performance
     
     Args:
-        client: GraphitiClient instance
+        client: A configured GraphitiClient instance with valid connections
         
     Returns:
-        List of configured tools ready for agent use
+        A list of all available Graphiti tools, ready for agent use
         
     Example:
         ```python
-        client = create_graphiti_client(...)
+        from langchain_graphiti import create_graphiti_client, create_agent_tools
+        from langgraph.prebuilt import create_react_agent
+        
+        # Set up client and tools
+        client = create_graphiti_client()
         tools = create_agent_tools(client)
         
-        # Use with LangGraph
-        from langgraph.prebuilt import create_react_agent
+        # Create agent with full Graphiti capabilities
         agent = create_react_agent(llm, tools)
+        
+        # Agent can now add information, search, manage graph structure
+        response = agent.invoke({
+            "messages": [("user", "Add this meeting summary to the knowledge graph")]
+        })
         ```
     """
     return [
@@ -713,11 +738,38 @@ def create_basic_agent_tools(client: GraphitiClient) -> list:
     """
     Create a basic set of Graphiti tools for simple agent use cases.
     
+    This factory function provides the essential tools needed for basic knowledge
+    graph operations. It's perfect for agents that primarily need to add information
+    and search for it, without requiring advanced graph manipulation capabilities.
+    
+    Included Tools:
+    - AddEpisodeTool: Add new knowledge to the graph
+    - SearchGraphTool: Query the graph for relevant information
+    - BuildCommunitiesTool: Basic graph maintenance and organization
+    
     Args:
-        client: GraphitiClient instance
+        client: A configured GraphitiClient instance with valid connections
         
     Returns:
-        List of essential tools for basic knowledge graph operations
+        A list of essential tools for basic knowledge graph operations
+        
+    Example:
+        ```python
+        from langchain_graphiti import create_graphiti_client, create_basic_agent_tools
+        from langchain.agents import create_openai_functions_agent
+        
+        # Set up client and basic tools
+        client = create_graphiti_client()
+        tools = create_basic_agent_tools(client)
+        
+        # Create a simple knowledge-aware agent
+        agent = create_openai_functions_agent(llm, tools, prompt)
+        
+        # Agent can add and search knowledge
+        response = agent.invoke({
+            "input": "Remember that John works at Microsoft, then tell me about John"
+        })
+        ```
     """
     return [
         AddEpisodeTool(client=client),
@@ -730,10 +782,29 @@ def create_advanced_agent_tools(client: GraphitiClient) -> list:
     """
     Create an advanced set of Graphiti tools for complex agent use cases.
     
+    This is an alias for create_agent_tools() that provides all available tools.
+    Use this when you want to be explicit about needing advanced capabilities
+    or when your agent requires the full spectrum of knowledge graph operations.
+    
+    Included Tools:
+    - All tools from create_agent_tools() (see that function for complete list)
+    
     Args:
-        client: GraphitiClient instance
+        client: A configured GraphitiClient instance with valid connections
         
     Returns:
-        List of all available tools for advanced knowledge graph operations
+        A list of all available tools for advanced knowledge graph operations
+        
+    Example:
+        ```python
+        from langchain_graphiti import create_graphiti_client, create_advanced_agent_tools
+        
+        # Set up client and advanced tools
+        client = create_graphiti_client()
+        tools = create_advanced_agent_tools(client)
+        
+        # Use with any agent framework that supports tools
+        # Agent will have full graph manipulation capabilities
+        ```
     """
     return create_agent_tools(client)  # Returns all tools

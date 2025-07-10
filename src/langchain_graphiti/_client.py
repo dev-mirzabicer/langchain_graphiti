@@ -111,6 +111,7 @@ class GraphitiClient(BaseModel):
     # Internal state
     _is_closed: bool = Field(default=False, exclude=True)
     _health_status: Dict[str, Any] = Field(default_factory=dict, exclude=True)
+    _health_checked: bool = Field(default=False, exclude=True)
     _instance_registry: Optional[weakref.WeakSet] = Field(default=None, exclude=True)
     
     # Modern Pydantic v2 configuration
@@ -135,22 +136,8 @@ class GraphitiClient(BaseModel):
         GraphitiClient._global_instance_registry.add(self)
         self._instance_registry = GraphitiClient._global_instance_registry
         
-        # Perform initial health check if enabled
-        if self.auto_health_check:
-            try:
-                asyncio.create_task(self._initial_health_check())
-            except RuntimeError:
-                # No event loop running, skip initial health check
-                logger.debug("No event loop running, skipping initial health check")
-
-    async def _initial_health_check(self):
-        """Perform initial health check on startup."""
-        try:
-            health = await self.health_check()
-            if health.get("status") != "healthy":
-                logger.warning(f"Initial health check failed: {health}")
-        except Exception as e:
-            logger.warning(f"Initial health check error: {e}")
+        # Health check will be performed lazily on first request
+        logger.debug("GraphitiClient initialized. Health check will be performed on first request.")
 
     @classmethod
     def from_connections(
@@ -250,6 +237,10 @@ class GraphitiClient(BaseModel):
         """
         Perform a comprehensive health check on the Graphiti instance.
         
+        Uses lazy initialization - runs the first time it's requested and caches
+        the result. Re-runs if the previous status was not healthy or if explicitly
+        requested after a failure.
+        
         Returns:
             A dictionary with detailed health status information.
         """
@@ -259,6 +250,15 @@ class GraphitiClient(BaseModel):
                 "message": "Client has been closed",
             }
         
+        # If not checked yet, or if status is not healthy, run a full check
+        if not self._health_checked or self._health_status.get("status") not in ["healthy", "degraded"]:
+            await self._perform_health_check()
+            self._health_checked = True
+            
+        return self._health_status.copy()
+
+    async def _perform_health_check(self) -> None:
+        """Internal method to perform the actual health check."""
         health_info = {
             "status": "unknown",
             "timestamp": None,
@@ -274,7 +274,7 @@ class GraphitiClient(BaseModel):
             try:
                 await self._test_database_connection()
                 health_info["components"]["database"] = {
-                    "status": "healthy", 
+                    "status": "healthy",
                     "type": type(self.graphiti_instance.driver).__name__
                 }
             except Exception as e:
@@ -287,12 +287,12 @@ class GraphitiClient(BaseModel):
                 # Check if the client has a proper configuration
                 if hasattr(llm_client, 'config') and hasattr(llm_client.config, 'api_key') and llm_client.config.api_key:
                     health_info["components"]["llm"] = {
-                        "status": "configured", 
+                        "status": "configured",
                         "type": type(llm_client).__name__
                     }
                 else:
                     health_info["components"]["llm"] = {
-                        "status": "misconfigured", 
+                        "status": "misconfigured",
                         "error": "API key might be missing"
                     }
                     health_info["errors"].append("LLM: Misconfigured")
@@ -312,7 +312,7 @@ class GraphitiClient(BaseModel):
                     }
                 else:
                     health_info["components"]["embedder"] = {
-                        "status": "unhealthy", 
+                        "status": "unhealthy",
                         "error": "Empty embedding returned"
                     }
                     health_info["errors"].append("Embedder: Empty embedding returned")
@@ -342,8 +342,6 @@ class GraphitiClient(BaseModel):
             # Cache health status
             self._health_status = health_info
             
-            return health_info
-            
         except Exception as e:
             error_info = {
                 "status": "error",
@@ -352,7 +350,6 @@ class GraphitiClient(BaseModel):
                 "error_type": type(e).__name__,
             }
             self._health_status = error_info
-            return error_info
 
     async def _test_database_connection(self) -> None:
         """Test database connection with a simple query."""

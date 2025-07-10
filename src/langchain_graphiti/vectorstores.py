@@ -503,7 +503,7 @@ class GraphitiVectorStore(VectorStore):
 
     def delete(self, ids: Optional[List[str]] = None, **kwargs: Any) -> Optional[bool]:
         """
-        Delete documents by IDs.
+        Delete documents by IDs synchronously.
         Note: This assumes IDs are episode UUIDs.
 
         Args:
@@ -522,26 +522,11 @@ class GraphitiVectorStore(VectorStore):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
-        async def _delete():
-            try:
-                successful = 0
-                for episode_id in ids:
-                    try:
-                        await self.client.graphiti_instance.remove_episode(episode_id)
-                        successful += 1
-                    except Exception as e:
-                        logger.warning(f"Failed to delete episode {episode_id}: {e}")
-                
-                return successful > 0
-            except Exception as e:
-                logger.error(f"Error during batch delete: {e}")
-                return False
-                
-        return loop.run_until_complete(_delete())
+        return loop.run_until_complete(self.adelete(ids, **kwargs))
 
     async def adelete(self, ids: Optional[List[str]] = None, **kwargs: Any) -> Optional[bool]:
         """
-        Delete documents by IDs asynchronously.
+        Delete documents by IDs asynchronously using concurrent processing.
 
         Args:
             ids: List of episode UUIDs to delete.
@@ -553,16 +538,24 @@ class GraphitiVectorStore(VectorStore):
         if not ids:
             return False
 
+        async def _remove_one(uuid: str) -> bool:
+            try:
+                await self.client.graphiti_instance.remove_episode(uuid)
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to delete episode {uuid}: {e}")
+                return False
+
         try:
-            successful = 0
-            for episode_id in ids:
-                try:
-                    await self.client.graphiti_instance.remove_episode(episode_id)
-                    successful += 1
-                except Exception as e:
-                    logger.warning(f"Failed to delete episode {episode_id}: {e}")
+            # Import semaphore_gather for controlled concurrency
+            from graphiti_core.helpers import semaphore_gather
             
-            return successful > 0
+            # Use semaphore_gather for controlled concurrency
+            results = await semaphore_gather(
+                *[_remove_one(uuid) for uuid in ids],
+                max_coroutines=self.client.graphiti_instance.max_coroutines or 10
+            )
+            return any(results)  # Return True if at least one deletion succeeded
         except Exception as e:
             logger.error(f"Error during async batch delete: {e}")
             return False
