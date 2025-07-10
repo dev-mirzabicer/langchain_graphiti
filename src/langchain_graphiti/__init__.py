@@ -23,7 +23,6 @@ from .exceptions import (
     GraphitiConfigurationError,
     GraphitiOperationError,
     GraphitiRetrieverError,
-    GraphitiVectorStoreError,
     GraphitiToolError,
 )
 
@@ -34,8 +33,6 @@ from .retrievers import (
     GraphitiCachedRetriever,
 )
 
-# VectorStore
-from .vectorstores import GraphitiVectorStore
 
 # Tools
 from .tools import (
@@ -67,7 +64,6 @@ __all__ = [
     "GraphitiConfigurationError",
     "GraphitiOperationError",
     "GraphitiRetrieverError",
-    "GraphitiVectorStoreError",
     "GraphitiToolError",
 
     # Retrievers
@@ -75,8 +71,6 @@ __all__ = [
     "GraphitiSemanticRetriever",
     "GraphitiCachedRetriever",
 
-    # VectorStore
-    "GraphitiVectorStore",
 
     # Tools
     "AddEpisodeTool",
@@ -124,13 +118,6 @@ def get_feature_summary() -> dict[str, list[str]]:
             "Semantic search with graph topology",
             "Caching support for performance",
             "Score threshold filtering",
-        ],
-        "vectorstore_features": [
-            "Complete VectorStore interface implementation",
-            "Maximum Marginal Relevance (MMR) search",
-            "Document management (add/update/delete)",
-            "Bulk operations support",
-            "Factory methods for easy creation",
         ],
         "tools_features": [
             "Full sync/async support for all tools",
