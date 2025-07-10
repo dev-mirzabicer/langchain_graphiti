@@ -38,6 +38,7 @@ from graphiti_core.search.search_config_recipes import (
 )
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.utils.datetime_utils import utc_now
+from graphiti_core.utils.bulk_utils import RawEpisode
 
 logger = logging.getLogger(__name__)
 
@@ -104,12 +105,11 @@ class GraphitiVectorStore(VectorStore):
         **kwargs: Any,
     ) -> List[str]:
         """
-        Add texts to the vector store asynchronously by processing each text
-        as an individual episode in parallel.
+        Add texts to the vector store asynchronously using Graphiti's
+        efficient bulk processing endpoint.
 
-        This method leverages asyncio to run multiple `add_episode` calls
-        concurrently, providing a balance of performance and the ability to
-        return the specific UUID of each created episode.
+        This method leverages Graphiti's bulk endpoint for significantly
+        better performance when adding multiple texts.
 
         Args:
             texts: Iterable of text strings to add.
@@ -118,12 +118,9 @@ class GraphitiVectorStore(VectorStore):
             **kwargs: Additional arguments (not used by this implementation).
 
         Returns:
-            A list of document IDs (the UUIDs of the created episodes). If an
-            individual text fails to be added, it will return an empty string
-            for that entry in the list.
+            A list of document IDs. Note: bulk operations don't return individual
+            UUIDs, so placeholder IDs are returned for interface compatibility.
         """
-        from graphiti_core.helpers import semaphore_gather
-
         texts_list = list(texts)
         if not texts_list:
             return []
@@ -131,44 +128,36 @@ class GraphitiVectorStore(VectorStore):
         metadatas = metadatas or [{}] * len(texts_list)
         target_group_id = group_id or self.group_id
 
-        async def _add_one_text(index: int, text: str) -> str:
-            """Helper coroutine to add a single text and handle errors."""
-            metadata = metadatas[index] if index < len(metadatas) else {}
-            
-            name = metadata.get("title", metadata.get("name", f"Document {index + 1}"))
-            source_description = metadata.get(
-                "source_description", 
-                f"Added to vector store at {utc_now().isoformat()}"
-            )
-
-            try:
-                # Add as an episode to Graphiti
-                result = await self.client.graphiti_instance.add_episode(
-                    name=name,
-                    episode_body=text,
-                    source_description=source_description,
-                    reference_time=utc_now(),
+        # Prepare episodes for bulk ingestion
+        raw_episodes = []
+        for i, text in enumerate(texts_list):
+            metadata = metadatas[i] if i < len(metadatas) else {}
+            raw_episodes.append(
+                RawEpisode(
+                    name=metadata.get("title", metadata.get("name", f"Document {i + 1}")),
+                    content=text,
+                    source_description=metadata.get(
+                        "source_description", 
+                        f"Added to vector store at {utc_now().isoformat()}"
+                    ),
                     source=EpisodeType.text,
-                    group_id=target_group_id,
-                    update_communities=False,  # Batch updates are more efficient
+                    reference_time=utc_now(),
                 )
-                return result.episode.uuid
-            except Exception as e:
-                # Log the error and return an empty string for this entry
-                logger.warning(f"Error adding text at index {index}: {e}")
-                return ""
-
-        # Create a list of coroutine tasks, one for each text
-        tasks = [_add_one_text(i, text) for i, text in enumerate(texts_list)]
-
-        # Execute all tasks concurrently, respecting the semaphore limit
-        # from the Graphiti instance to avoid overwhelming resources.
-        episode_ids = await semaphore_gather(
-            *tasks,
-            max_coroutines=self.client.graphiti_instance.max_coroutines
-        )
-
-        return episode_ids
+            )
+        
+        try:
+            # Call the bulk endpoint for efficient processing
+            await self.client.graphiti_instance.add_episode_bulk(
+                bulk_episodes=raw_episodes,
+                group_id=target_group_id,
+            )
+            
+            # Since bulk doesn't return individual UUIDs, return placeholder IDs
+            # This is a known trade-off for bulk performance
+            return [f"bulk_added_{i}" for i in range(len(raw_episodes))]
+        except Exception as e:
+            logger.error(f"Bulk add failed: {e}")
+            raise
 
     def add_texts(
         self,
@@ -643,7 +632,7 @@ class GraphitiVectorStore(VectorStore):
 
     async def aget_by_ids(self, ids: List[str]) -> List[Document]:
         """
-        Get documents by their IDs asynchronously.
+        Get documents by their IDs (episode UUIDs) asynchronously.
 
         Args:
             ids: List of document IDs (episode UUIDs).
@@ -651,21 +640,34 @@ class GraphitiVectorStore(VectorStore):
         Returns:
             List of documents corresponding to the IDs.
         """
+        if not ids:
+            return []
+            
         try:
-            # Use Graphiti's get_nodes_and_edges_by_episode to retrieve content
-            search_results = await self.client.graphiti_instance.get_nodes_and_edges_by_episode(ids)
+            # Fetch the full EpisodicNode objects using the driver
+            episodes = await self.client.graphiti_instance.driver.get_by_uuids(ids)
             
-            # Convert to documents (simplified representation)
-            docs = []
-            for i, episode_id in enumerate(ids):
-                # Create a basic document representation
-                content = f"Episode {episode_id} content"
-                metadata = {"uuid": episode_id, "type": "episode"}
-                docs.append(Document(page_content=content, metadata=metadata))
+            # Convert them to LangChain Documents
+            documents = []
+            for ep in episodes:
+                if ep:  # Check if episode exists
+                    documents.append(
+                        Document(
+                            page_content=ep.content,
+                            metadata={
+                                "uuid": ep.uuid,
+                                "name": ep.name,
+                                "source": ep.source.value if hasattr(ep.source, 'value') else str(ep.source),
+                                "group_id": ep.group_id,
+                                "created_at": ep.created_at.isoformat(),
+                                "valid_at": ep.valid_at.isoformat() if ep.valid_at else None,
+                            }
+                        )
+                    )
             
-            return docs
+            return documents
         except Exception as e:
-            logger.error(f"Error retrieving documents by IDs: {e}")
+            logger.error(f"Error retrieving documents by IDs {ids}: {e}")
             return []
 
     def get_stats(self) -> Dict[str, Any]:

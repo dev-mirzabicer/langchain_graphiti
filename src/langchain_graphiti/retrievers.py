@@ -117,7 +117,7 @@ class GraphitiRetriever(BaseRetriever):
     @traceable
     @require_client
     async def _perform_search_with_scores(
-        self, query: str
+        self, query: str, config_override: Optional[SearchConfig] = None
     ) -> Tuple[SearchResults, Dict[str, float]]:
         """
         Perform Graphiti search and extract scores more efficiently.
@@ -128,91 +128,21 @@ class GraphitiRetriever(BaseRetriever):
         try:
             graphiti_instance = self.client.graphiti_instance
             
-            # Apply score threshold to search config if specified
-            config = self.config
-            if self.score_threshold is not None:
-                config.reranker_min_score = self.score_threshold
+            # Use the override if provided, otherwise use the instance's config
+            search_config = config_override or self.config
 
             # Use Graphiti's native search which includes scoring in the reranker
             search_results = await graphiti_search_internal(
                 clients=graphiti_instance.clients,
                 query=query,
                 group_ids=self.group_ids,
-                config=config,
+                config=search_config,
                 search_filter=self.search_filter,
                 query_vector=None,  # Let Graphiti generate it internally
             )
 
-            # Extract scores based on the reranker configuration
+            # Simplified scoring logic - positional scoring based on result order
             scores = {}
-            
-            # For cross-encoder reranking, we can get more accurate scores
-            if (hasattr(config, 'edge_config') and config.edge_config and 
-                hasattr(config.edge_config, 'reranker') and 
-                str(config.edge_config.reranker).endswith('cross_encoder')):
-                
-                # Cross-encoder provides high-quality scores
-                await self._extract_cross_encoder_scores(query, search_results, scores)
-            else:
-                # Fallback to RRF or other reranker scores
-                await self._extract_fallback_scores(search_results, scores)
-            
-            return search_results, scores
-            
-        except Exception as e:
-            logger.error(f"Search failed for query '{query[:50]}...': {e}")
-            raise GraphitiRetrieverError(f"Failed to perform search: {e}") from e
-
-    async def _extract_cross_encoder_scores(
-        self, 
-        query: str, 
-        search_results: SearchResults, 
-        scores: Dict[str, float]
-    ) -> None:
-        """Extract scores using cross-encoder for high accuracy."""
-        try:
-            cross_encoder = self.client.graphiti_instance.cross_encoder
-            
-            # Build passages for scoring
-            passages_to_score = []
-            passage_to_uuid = {}
-
-            if self.search_mode in ["edges", "combined"]:
-                for edge in search_results.edges:
-                    passage = f"[{edge.name}] {edge.fact}"
-                    passages_to_score.append(passage)
-                    passage_to_uuid[passage] = edge.uuid
-
-            if self.search_mode in ["nodes", "combined"]:
-                for node in search_results.nodes:
-                    passage = f"Entity: {node.name}. Summary: {node.summary or 'No summary available.'}"
-                    passages_to_score.append(passage)
-                    passage_to_uuid[passage] = node.uuid
-
-            if passages_to_score:
-                try:
-                    # Get ranked passages with scores from cross-encoder
-                    ranked_passages = await cross_encoder.rank(query, passages_to_score)
-                    for passage, score in ranked_passages:
-                        uuid = passage_to_uuid.get(passage)
-                        if uuid:
-                            scores[uuid] = float(score)
-                except Exception as e:
-                    logger.warning(f"Failed to extract cross-encoder scores: {e}")
-                    # Fallback to basic scoring
-                    await self._extract_fallback_scores(search_results, scores)
-        except Exception as e:
-            logger.warning(f"Cross-encoder scoring failed: {e}")
-            await self._extract_fallback_scores(search_results, scores)
-
-    async def _extract_fallback_scores(
-        self, 
-        search_results: SearchResults, 
-        scores: Dict[str, float]
-    ) -> None:
-        """Extract basic scores when cross-encoder scoring is not available."""
-        try:
-            # Assign scores based on order (higher for earlier results)
             all_items = []
             
             if self.search_mode in ["edges", "combined"]:
@@ -221,18 +151,16 @@ class GraphitiRetriever(BaseRetriever):
             if self.search_mode in ["nodes", "combined"]:
                 all_items.extend([(node.uuid, "node") for node in search_results.nodes])
             
-            # Assign decreasing scores based on ranking order
+            # Assign decreasing scores based on ranking order (higher is better)
             total_items = len(all_items)
             for i, (uuid, item_type) in enumerate(all_items):
-                # Higher score for items that appear earlier in results
-                scores[uuid] = max(0.1, 1.0 - (i / max(total_items, 1)))
+                scores[uuid] = 1.0 - (i / max(1, total_items))
+            
+            return search_results, scores
+            
         except Exception as e:
-            logger.error(f"Fallback scoring failed: {e}")
-            # If even fallback fails, assign default scores
-            for edge in search_results.edges:
-                scores[edge.uuid] = 0.5
-            for node in search_results.nodes:
-                scores[node.uuid] = 0.5
+            logger.error(f"Search failed for query '{query[:50]}...': {e}")
+            raise GraphitiRetrieverError(f"Failed to perform search: {e}") from e
 
     @traceable
     @require_client
@@ -358,20 +286,19 @@ class GraphitiRetriever(BaseRetriever):
         """
         Stream documents one by one with proper async context handling.
         
-        This method handles both sync and async contexts by checking if an event loop
-        is running. If it is, it runs the async streaming in a separate thread.
-        If no event loop is running, it creates a new one to run the async code.
+        This method handles both sync and async contexts correctly by collecting
+        all documents first, then yielding them.
         """
         try:
-            async def collect_docs():
+            async def _collect_docs():
                 docs = []
                 async for doc in self.astream(query):
                     docs.append(doc)
                 return docs
             
-            docs = safe_sync_run(collect_docs())
-            for doc in docs:
-                yield doc
+            # safe_sync_run will handle the event loop correctly
+            docs_list = safe_sync_run(_collect_docs())
+            yield from docs_list
         except Exception as e:
             logger.error(f"Sync streaming failed for query '{query[:50]}...': {e}")
             raise GraphitiRetrieverError(f"Failed to stream results: {e}") from e
@@ -410,7 +337,7 @@ class GraphitiRetriever(BaseRetriever):
         **kwargs: Any,
     ) -> List[Tuple[Document, float]]:
         """
-        Perform similarity search with score filtering.
+        Perform similarity search with score filtering without mutating instance state.
         
         Args:
             query: The search query
@@ -420,28 +347,31 @@ class GraphitiRetriever(BaseRetriever):
         Returns:
             List of (Document, score) tuples
         """
-        # Temporarily override config
-        original_config = self.config
-        original_threshold = self.score_threshold
-        
         try:
+            # Create a temporary config for this specific call (thread-safe)
             temp_config = self.config.model_copy(deep=True)
             temp_config.limit = k
             
-            # Set score threshold
-            temp_score_threshold = score_threshold or self.score_threshold
+            # Apply score threshold to search config if specified
+            if score_threshold is not None:
+                temp_config.reranker_min_score = score_threshold
+
+            search_results, scores = await self._perform_search_with_scores(
+                query, config_override=temp_config
+            )
+            docs = await self._convert_search_results_to_docs(search_results, scores)
             
-            self.config = temp_config
-            self.score_threshold = temp_score_threshold
+            # Filter by score threshold again as the internal one is a hint
+            final_results = []
+            for doc in docs:
+                score = doc.metadata.get("score", 0.0)
+                if score_threshold is None or score >= score_threshold:
+                    final_results.append((doc, score))
             
-            docs = await self._aget_relevant_documents(query, run_manager=None)
-            return [(doc, doc.metadata.get("score", 0.0)) for doc in docs]
+            return final_results
         except Exception as e:
             logger.error(f"Similarity search with score failed for query '{query[:50]}...': {e}")
             raise GraphitiRetrieverError(f"Failed to perform similarity search: {e}") from e
-        finally:
-            self.config = original_config
-            self.score_threshold = original_threshold
 
     @require_client
     def similarity_search_with_score(
@@ -522,16 +452,12 @@ class GraphitiSemanticRetriever(GraphitiRetriever):
         **kwargs: Any,
     ) -> List[Document]:
         """
-        Perform Maximum Marginal Relevance (MMR) search.
+        Perform Maximum Marginal Relevance (MMR) search without state mutation.
         
         This uses Graphiti's MMR reranker configuration for diverse results.
         """
-        # Temporarily configure for MMR
-        original_config = self.config
-        original_threshold = self.score_threshold
-        
         try:
-            # Create MMR-configured search
+            # Create MMR-configured search without mutating instance state
             from graphiti_core.search.search_config import SearchConfig, EdgeSearchConfig, NodeSearchConfig
             from graphiti_core.search.search_config import EdgeReranker, NodeReranker, EdgeSearchMethod, NodeSearchMethod
             
@@ -549,17 +475,17 @@ class GraphitiSemanticRetriever(GraphitiRetriever):
                 limit=k,
             )
             
-            self.config = mmr_config
-            self.score_threshold = score_threshold
+            if score_threshold is not None:
+                mmr_config.reranker_min_score = score_threshold
             
-            docs = await self._aget_relevant_documents(query, run_manager=None)
+            search_results, scores = await self._perform_search_with_scores(
+                query, config_override=mmr_config
+            )
+            docs = await self._convert_search_results_to_docs(search_results, scores)
             return docs
         except Exception as e:
             logger.error(f"MMR search failed for query '{query[:50]}...': {e}")
             raise GraphitiRetrieverError(f"Failed to perform MMR search: {e}") from e
-        finally:
-            self.config = original_config
-            self.score_threshold = original_threshold
 
 
 class GraphitiCachedRetriever(GraphitiRetriever):

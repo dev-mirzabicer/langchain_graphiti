@@ -19,7 +19,7 @@ Key Components:
 from __future__ import annotations
 
 import asyncio
-from typing import List, Optional, Type, Annotated, Dict, Any
+from typing import List, Optional, Type, Annotated, Dict, Any, Tuple
 
 from langchain_core.tools import BaseTool, InjectedToolArg
 from langsmith import traceable
@@ -40,6 +40,33 @@ from graphiti_core.errors import (
     EntityTypeValidationError,
     GraphitiError,
 )
+from graphiti_core.helpers import semaphore_gather
+
+
+# --- Base Tool Class ---
+
+
+class GraphitiBaseTool(BaseTool):
+    """Base class for Graphiti tools to handle sync/async execution."""
+    
+    client: Annotated[
+        GraphitiClient,
+        InjectedToolArg(
+            description="The GraphitiClient instance to use for graph operations.",
+        ),
+    ]
+
+    def _run(self, *args: Any, **kwargs: Any) -> str:
+        """Generic synchronous wrapper for the async method."""
+        try:
+            return safe_sync_run(self._arun(*args, **kwargs))
+        except Exception as e:
+            error_msg = f"Failed to execute tool '{self.name}': {e}"
+            raise GraphitiToolError(error_msg, tool_name=self.name) from e
+
+    async def _arun(self, *args: Any, **kwargs: Any) -> str:
+        """Override this method in subclasses with the actual async logic."""
+        raise NotImplementedError("Subclasses must implement _arun method")
 
 
 # --- AddEpisodeTool ---
@@ -86,7 +113,7 @@ class AddEpisodeSchema(BaseModel):
     )
 
 
-class AddEpisodeTool(BaseTool):
+class AddEpisodeTool(GraphitiBaseTool):
     """
     A tool to add a new episode (a piece of information) to the Graphiti
     knowledge graph. 
@@ -105,34 +132,6 @@ class AddEpisodeTool(BaseTool):
         "will automatically extract entities and relationships from the content."
     )
     args_schema: Type[BaseModel] = AddEpisodeSchema
-    
-    # Use InjectedToolArg for proper dependency injection
-    client: Annotated[
-        GraphitiClient,
-        InjectedToolArg(
-            description="The GraphitiClient instance to use for graph operations.",
-        ),
-    ]
-
-    @require_client
-    def _run(
-        self,
-        name: str,
-        episode_body: str,
-        source_description: str,
-        group_id: str = "",
-        source: str = "message",
-        update_communities: bool = False,
-        **kwargs,
-    ) -> str:
-        """Use the tool synchronously."""
-        try:
-            return safe_sync_run(
-                self._arun(name, episode_body, source_description, group_id, source, update_communities, **kwargs)
-            )
-        except Exception as e:
-            error_msg = f"Failed to add episode '{name}': {e}"
-            raise GraphitiToolError(error_msg, tool_name=self.name) from e
 
     @traceable
     @require_client
@@ -214,7 +213,7 @@ class SearchGraphSchema(BaseModel):
     )
 
 
-class SearchGraphTool(BaseTool):
+class SearchGraphTool(GraphitiBaseTool):
     """
     A tool to search the Graphiti knowledge graph for information relevant
     to a query. 
@@ -233,30 +232,6 @@ class SearchGraphTool(BaseTool):
         "of findings that can be used to answer questions or provide context."
     )
     args_schema: Type[BaseModel] = SearchGraphSchema
-    
-    client: Annotated[
-        GraphitiClient,
-        InjectedToolArg(
-            description="The GraphitiClient instance to use for graph operations.",
-        ),
-    ]
-
-    @require_client
-    def _run(
-        self, 
-        query: str, 
-        group_ids: Optional[List[str]] = None, 
-        max_results: int = 10,
-        **kwargs
-    ) -> str:
-        """Use the tool synchronously."""
-        try:
-            return safe_sync_run(
-                self._arun(query, group_ids, max_results, **kwargs)
-            )
-        except Exception as e:
-            error_msg = f"Failed to search knowledge graph for '{query[:50]}...': {e}"
-            raise GraphitiToolError(error_msg, tool_name=self.name) from e
 
     @traceable
     @require_client
@@ -334,7 +309,7 @@ class BuildCommunitiesSchema(BaseModel):
     )
 
 
-class BuildCommunitiesTool(BaseTool):
+class BuildCommunitiesTool(GraphitiBaseTool):
     """
     A tool to trigger community detection and organization in the Graphiti
     knowledge graph.
@@ -352,28 +327,6 @@ class BuildCommunitiesTool(BaseTool):
         "Use this after adding significant amounts of new information."
     )
     args_schema: Type[BaseModel] = BuildCommunitiesSchema
-    
-    client: Annotated[
-        GraphitiClient,
-        InjectedToolArg(
-            description="The GraphitiClient instance to use for graph operations.",
-        ),
-    ]
-
-    @require_client
-    def _run(
-        self, 
-        group_ids: Optional[List[str]] = None,
-        **kwargs
-    ) -> str:
-        """Use the tool synchronously."""
-        try:
-            return safe_sync_run(
-                self._arun(group_ids, **kwargs)
-            )
-        except Exception as e:
-            error_msg = f"Failed to build communities: {e}"
-            raise GraphitiToolError(error_msg, tool_name=self.name) from e
 
     @traceable
     @require_client
@@ -416,7 +369,7 @@ class RemoveEpisodeSchema(BaseModel):
     )
 
 
-class RemoveEpisodeTool(BaseTool):
+class RemoveEpisodeTool(GraphitiBaseTool):
     """
     A tool to remove specific episodes from the Graphiti knowledge graph.
     
@@ -433,28 +386,6 @@ class RemoveEpisodeTool(BaseTool):
         "removes information from the graph."
     )
     args_schema: Type[BaseModel] = RemoveEpisodeSchema
-    
-    client: Annotated[
-        GraphitiClient,
-        InjectedToolArg(
-            description="The GraphitiClient instance to use for graph operations.",
-        ),
-    ]
-
-    @require_client
-    def _run(
-        self, 
-        episode_uuids: List[str],
-        **kwargs
-    ) -> str:
-        """Use the tool synchronously."""
-        try:
-            return safe_sync_run(
-                self._arun(episode_uuids, **kwargs)
-            )
-        except Exception as e:
-            error_msg = f"Failed to remove episodes {episode_uuids}: {e}"
-            raise GraphitiToolError(error_msg, tool_name=self.name) from e
 
     @traceable
     @require_client
@@ -463,22 +394,27 @@ class RemoveEpisodeTool(BaseTool):
         episode_uuids: List[str],
         **kwargs
     ) -> str:
-        """Use the tool asynchronously."""
+        """Use the tool asynchronously with parallel processing."""
         if not episode_uuids:
             return "⚠️ No episode UUIDs provided. Please specify which episodes to remove."
             
         try:
-            successful_removals = []
-            failed_removals = []
-            
-            for episode_uuid in episode_uuids:
+            async def _remove_one(uuid: str) -> Tuple[str, Optional[str]]:
+                """Helper to remove a single episode and return result."""
                 try:
-                    await self.client.graphiti_instance.remove_episode(episode_uuid)
-                    successful_removals.append(episode_uuid)
-                except GraphitiError as e:
-                    failed_removals.append((episode_uuid, f"Graphiti Error: {str(e)}"))
+                    await self.client.graphiti_instance.remove_episode(uuid)
+                    return uuid, None
                 except Exception as e:
-                    failed_removals.append((episode_uuid, f"{type(e).__name__}: {str(e)}"))
+                    return uuid, str(e)
+
+            # Use semaphore_gather for controlled concurrency
+            results = await semaphore_gather(
+                *[_remove_one(uuid) for uuid in episode_uuids],
+                max_coroutines=self.client.graphiti_instance.max_coroutines
+            )
+
+            successful_removals = [uuid for uuid, err in results if err is None]
+            failed_removals = [(uuid, err) for uuid, err in results if err is not None]
             
             # Build detailed response
             response_parts = []
@@ -548,7 +484,7 @@ class AddTripletSchema(BaseModel):
     )
 
 
-class AddTripletTool(BaseTool):
+class AddTripletTool(GraphitiBaseTool):
     """
     A tool to directly add a triplet (source_node -> edge -> target_node) 
     to the Graphiti knowledge graph.
@@ -565,35 +501,6 @@ class AddTripletTool(BaseTool):
         "to add, such as facts, relationships, or when importing from structured data sources."
     )
     args_schema: Type[BaseModel] = AddTripletSchema
-    
-    client: Annotated[
-        GraphitiClient,
-        InjectedToolArg(
-            description="The GraphitiClient instance to use for graph operations.",
-        ),
-    ]
-
-    @require_client
-    def _run(
-        self,
-        source_node_name: str,
-        source_node_labels: List[str],
-        edge_name: str,
-        edge_fact: str,
-        target_node_name: str,
-        target_node_labels: List[str],
-        group_id: str = "",
-        **kwargs,
-    ) -> str:
-        """Use the tool synchronously."""
-        try:
-            return safe_sync_run(
-                self._arun(source_node_name, source_node_labels, edge_name, edge_fact,
-                          target_node_name, target_node_labels, group_id, **kwargs)
-            )
-        except Exception as e:
-            error_msg = f"Failed to add triplet {source_node_name} -[{edge_name}]-> {target_node_name}: {e}"
-            raise GraphitiToolError(error_msg, tool_name=self.name) from e
 
     @traceable
     @require_client
@@ -665,7 +572,7 @@ class GetNodesAndEdgesByEpisodeSchema(BaseModel):
     )
 
 
-class GetNodesAndEdgesByEpisodeTool(BaseTool):
+class GetNodesAndEdgesByEpisodeTool(GraphitiBaseTool):
     """
     A tool to retrieve all nodes and edges associated with specific episodes.
     
@@ -681,28 +588,6 @@ class GetNodesAndEdgesByEpisodeTool(BaseTool):
         "derived from particular episodes or to debug knowledge extraction results."
     )
     args_schema: Type[BaseModel] = GetNodesAndEdgesByEpisodeSchema
-    
-    client: Annotated[
-        GraphitiClient,
-        InjectedToolArg(
-            description="The GraphitiClient instance to use for graph operations.",
-        ),
-    ]
-
-    @require_client
-    def _run(
-        self, 
-        episode_uuids: List[str],
-        **kwargs
-    ) -> str:
-        """Use the tool synchronously."""
-        try:
-            return safe_sync_run(
-                self._arun(episode_uuids, **kwargs)
-            )
-        except Exception as e:
-            error_msg = f"Failed to get nodes and edges for episodes {episode_uuids}: {e}"
-            raise GraphitiToolError(error_msg, tool_name=self.name) from e
 
     @traceable
     @require_client
@@ -747,7 +632,7 @@ class BuildIndicesAndConstraintsSchema(BaseModel):
     )
 
 
-class BuildIndicesAndConstraintsTool(BaseTool):
+class BuildIndicesAndConstraintsTool(GraphitiBaseTool):
     """
     A tool to build database indices and constraints for optimal performance.
     
@@ -763,28 +648,6 @@ class BuildIndicesAndConstraintsTool(BaseTool):
         "Should typically be run once during initial setup or after schema changes."
     )
     args_schema: Type[BaseModel] = BuildIndicesAndConstraintsSchema
-    
-    client: Annotated[
-        GraphitiClient,
-        InjectedToolArg(
-            description="The GraphitiClient instance to use for graph operations.",
-        ),
-    ]
-
-    @require_client
-    def _run(
-        self, 
-        delete_existing: bool = False,
-        **kwargs
-    ) -> str:
-        """Use the tool synchronously."""
-        try:
-            return safe_sync_run(
-                self._arun(delete_existing, **kwargs)
-            )
-        except Exception as e:
-            error_msg = f"Failed to build indices and constraints: {e}"
-            raise GraphitiToolError(error_msg, tool_name=self.name) from e
 
     @traceable
     @require_client

@@ -272,38 +272,60 @@ class GraphitiClient(BaseModel):
             
             # Test database connectivity
             try:
-                # Try a simple database operation
                 await self._test_database_connection()
-                health_info["components"]["database"] = {"status": "healthy", "type": type(self.graphiti_instance.driver).__name__}
+                health_info["components"]["database"] = {
+                    "status": "healthy", 
+                    "type": type(self.graphiti_instance.driver).__name__
+                }
             except Exception as e:
                 health_info["components"]["database"] = {"status": "unhealthy", "error": str(e)}
                 health_info["errors"].append(f"Database: {e}")
 
-            # Test LLM client
+            # Test LLM client with configuration check
             try:
-                health_info["components"]["llm"] = {
-                    "status": "available", 
-                    "type": type(self.graphiti_instance.llm_client).__name__
-                }
+                llm_client = self.graphiti_instance.llm_client
+                # Check if the client has a proper configuration
+                if hasattr(llm_client, 'config') and hasattr(llm_client.config, 'api_key') and llm_client.config.api_key:
+                    health_info["components"]["llm"] = {
+                        "status": "configured", 
+                        "type": type(llm_client).__name__
+                    }
+                else:
+                    health_info["components"]["llm"] = {
+                        "status": "misconfigured", 
+                        "error": "API key might be missing"
+                    }
+                    health_info["errors"].append("LLM: Misconfigured")
             except Exception as e:
                 health_info["components"]["llm"] = {"status": "unavailable", "error": str(e)}
                 health_info["errors"].append(f"LLM: {e}")
 
-            # Test embedder
+            # Test embedder with a lightweight functional test
             try:
-                health_info["components"]["embedder"] = {
-                    "status": "available",
-                    "type": type(self.graphiti_instance.embedder).__name__
-                }
+                # Attempt a lightweight embedding test
+                test_embedding = await self.graphiti_instance.embedder.create("test")
+                if test_embedding and len(test_embedding) > 0:
+                    health_info["components"]["embedder"] = {
+                        "status": "healthy",
+                        "type": type(self.graphiti_instance.embedder).__name__,
+                        "embedding_dim": len(test_embedding)
+                    }
+                else:
+                    health_info["components"]["embedder"] = {
+                        "status": "unhealthy", 
+                        "error": "Empty embedding returned"
+                    }
+                    health_info["errors"].append("Embedder: Empty embedding returned")
             except Exception as e:
-                health_info["components"]["embedder"] = {"status": "unavailable", "error": str(e)}
+                health_info["components"]["embedder"] = {"status": "unhealthy", "error": str(e)}
                 health_info["errors"].append(f"Embedder: {e}")
 
             # Test cross-encoder
             try:
+                cross_encoder = self.graphiti_instance.cross_encoder
                 health_info["components"]["cross_encoder"] = {
                     "status": "available",
-                    "type": type(self.graphiti_instance.cross_encoder).__name__
+                    "type": type(cross_encoder).__name__
                 }
             except Exception as e:
                 health_info["components"]["cross_encoder"] = {"status": "unavailable", "error": str(e)}
