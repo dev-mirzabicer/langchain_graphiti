@@ -29,4 +29,4 @@ jobs:
           poetry run ruff check .
           poetry run mypy src
       - name: Run tests
-        run: poetry run pytest
+        run: poetry run pytest --asyncio-mode=auto
