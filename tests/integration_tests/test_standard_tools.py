@@ -6,8 +6,6 @@ from datetime import datetime
 
 from langchain_core.tools import BaseTool
 from langchain_tests.integration_tests.tools import ToolsIntegrationTests
-
-from langchain_graphiti import create_graphiti_client
 from langchain_graphiti.tools import (
     AddEpisodeTool,
     SearchGraphTool,
@@ -18,31 +16,35 @@ from langchain_graphiti.tools import (
     BuildIndicesAndConstraintsTool,
 )
 from langchain_graphiti._client import GraphitiClient
+import asyncio
 
 # --- Module-level client for all tool tests ---
 
-_client: Optional[GraphitiClient] = None
 _TEST_GROUP_ID: ClassVar[str] = "standard-tool-test"
+_client_for_standard_tools: Optional[GraphitiClient] = None
+
 
 @pytest.fixture(scope="module", autouse=True)
-async def setup_and_teardown_client() -> Generator[None, None, None]:
-    """Module-level fixture to manage the client for all tool tests."""
-    global _client
-    try:
-        _client = create_graphiti_client()
-    except Exception as e:
-        pytest.skip(f"Could not create Graphiti client: {e}")
-    
-    await _client.graphiti_instance.build_indices_and_constraints(delete_existing=True)
-    
-    yield
-    
-    if _client:
-        await _client.graphiti_instance.driver.execute_query(
-            "MATCH (n {group_id: $group_id}) DETACH DELETE n",
-            group_id=_TEST_GROUP_ID,
-        )
-        await _client.close()
+def client_for_standard_tools(client_for_integration: GraphitiClient) -> Generator[GraphitiClient, None, None]:
+    """Setup and teardown for standard tool tests."""
+    global _client_for_standard_tools
+    _client_for_standard_tools = client_for_integration
+
+    async def setup():
+        await _client_for_standard_tools.graphiti_instance.build_indices_and_constraints(delete_existing=True)
+
+    asyncio.run(setup())
+    yield _client_for_standard_tools
+
+    async def teardown():
+        if _client_for_standard_tools:
+            await _client_for_standard_tools.graphiti_instance.driver.execute_query(
+                "MATCH (n {group_id: $group_id}) DETACH DELETE n",
+                group_id=_TEST_GROUP_ID,
+            )
+
+    asyncio.run(teardown())
+
 
 # --- Test Suites for each Tool ---
 
@@ -53,7 +55,7 @@ class TestStandardAddEpisodeTool(ToolsIntegrationTests):
 
     @property
     def tool_constructor_params(self) -> Dict:
-        return {"client": _client}
+        return {"client": _client_for_standard_tools}
 
     @property
     def tool_invoke_params_example(self) -> Dict[str, Any]:
@@ -65,16 +67,16 @@ class TestStandardAddEpisodeTool(ToolsIntegrationTests):
         }
 
 @pytest.mark.asyncio
-async def get_search_tool_for_test() -> SearchGraphTool:
+async def get_search_tool_for_test(client: GraphitiClient) -> SearchGraphTool:
     """Helper to create a search tool with data."""
-    add_tool = AddEpisodeTool(client=_client)
+    add_tool = AddEpisodeTool(client=client)
     await add_tool._arun(
         name="Searchable Episode",
         episode_body="This is a searchable document for the test suite.",
         source_description="search-test-setup",
         group_id=_TEST_GROUP_ID,
     )
-    return SearchGraphTool(client=_client)
+    return SearchGraphTool(client=client)
 
 class TestStandardSearchGraphTool(ToolsIntegrationTests):
     @property
@@ -83,7 +85,7 @@ class TestStandardSearchGraphTool(ToolsIntegrationTests):
 
     @property
     def tool_constructor_params(self) -> Dict:
-        return {"client": _client}
+        return {"client": _client_for_standard_tools}
 
     @property
     def tool_invoke_params_example(self) -> Dict[str, Any]:
@@ -92,7 +94,7 @@ class TestStandardSearchGraphTool(ToolsIntegrationTests):
     @pytest.mark.xfail(reason="Overridden to perform async setup before testing invocation.")
     async def test_invoke_no_tool_call(self, tool: BaseTool) -> None:
         # Override to perform setup
-        await get_search_tool_for_test()
+        await get_search_tool_for_test(_client_for_standard_tools)
         # Replicate the logic of the base test in an async way
         await tool.ainvoke(self.tool_invoke_params_example)
 
@@ -103,7 +105,7 @@ class TestStandardAddTripletTool(ToolsIntegrationTests):
 
     @property
     def tool_constructor_params(self) -> Dict:
-        return {"client": _client}
+        return {"client": _client_for_standard_tools}
 
     @property
     def tool_invoke_params_example(self) -> Dict[str, Any]:
@@ -124,7 +126,7 @@ class TestStandardBuildCommunitiesTool(ToolsIntegrationTests):
 
     @property
     def tool_constructor_params(self) -> Dict:
-        return {"client": _client}
+        return {"client": _client_for_standard_tools}
 
 class TestStandardBuildIndicesTool(ToolsIntegrationTests):
     @property
@@ -133,12 +135,12 @@ class TestStandardBuildIndicesTool(ToolsIntegrationTests):
 
     @property
     def tool_constructor_params(self) -> Dict:
-        return {"client": _client}
+        return {"client": _client_for_standard_tools}
 
 @pytest.mark.asyncio
-async def get_remove_tool_and_uuid() -> tuple[RemoveEpisodeTool, str]:
+async def get_remove_tool_and_uuid(client: GraphitiClient) -> tuple[RemoveEpisodeTool, str]:
     """Helper to create a remove tool with a fresh episode."""
-    add_tool = AddEpisodeTool(client=_client)
+    add_tool = AddEpisodeTool(client=client)
     res = await add_tool._arun(
         name="to-be-removed",
         episode_body="remove me",
@@ -146,7 +148,7 @@ async def get_remove_tool_and_uuid() -> tuple[RemoveEpisodeTool, str]:
         group_id=_TEST_GROUP_ID,
     )
     episode_uuid = res.split("'")[1]
-    return RemoveEpisodeTool(client=_client), episode_uuid
+    return RemoveEpisodeTool(client=client), episode_uuid
 
 class TestStandardRemoveEpisodeTool(ToolsIntegrationTests):
     @property
@@ -155,7 +157,7 @@ class TestStandardRemoveEpisodeTool(ToolsIntegrationTests):
 
     @property
     def tool_constructor_params(self) -> Dict:
-        return {"client": _client}
+        return {"client": _client_for_standard_tools}
 
     @property
     def tool_invoke_params_example(self) -> Dict[str, Any]:
@@ -163,13 +165,13 @@ class TestStandardRemoveEpisodeTool(ToolsIntegrationTests):
 
     @pytest.mark.xfail(reason="Overridden to create a real episode before testing invocation.")
     async def test_invoke_no_tool_call(self, tool: BaseTool) -> None:
-        _, episode_uuid = await get_remove_tool_and_uuid()
+        _, episode_uuid = await get_remove_tool_and_uuid(_client_for_standard_tools)
         await tool.ainvoke({"episode_uuids": [episode_uuid]})
 
 @pytest.mark.asyncio
-async def get_nodes_tool_and_uuid() -> tuple[GetNodesAndEdgesByEpisodeTool, str]:
+async def get_nodes_tool_and_uuid(client: GraphitiClient) -> tuple[GetNodesAndEdgesByEpisodeTool, str]:
     """Helper to create a get_nodes tool with a fresh episode."""
-    add_tool = AddEpisodeTool(client=_client)
+    add_tool = AddEpisodeTool(client=client)
     res = await add_tool._arun(
         name="to-be-retrieved",
         episode_body="retrieve me",
@@ -177,7 +179,7 @@ async def get_nodes_tool_and_uuid() -> tuple[GetNodesAndEdgesByEpisodeTool, str]
         group_id=_TEST_GROUP_ID,
     )
     episode_uuid = res.split("'")[1]
-    return GetNodesAndEdgesByEpisodeTool(client=_client), episode_uuid
+    return GetNodesAndEdgesByEpisodeTool(client=client), episode_uuid
 
 class TestStandardGetNodesAndEdgesTool(ToolsIntegrationTests):
     @property
@@ -186,7 +188,7 @@ class TestStandardGetNodesAndEdgesTool(ToolsIntegrationTests):
 
     @property
     def tool_constructor_params(self) -> Dict:
-        return {"client": _client}
+        return {"client": _client_for_standard_tools}
 
     @property
     def tool_invoke_params_example(self) -> Dict[str, Any]:
@@ -194,5 +196,5 @@ class TestStandardGetNodesAndEdgesTool(ToolsIntegrationTests):
 
     @pytest.mark.xfail(reason="Overridden to create a real episode before testing invocation.")
     async def test_invoke_no_tool_call(self, tool: BaseTool) -> None:
-        _, episode_uuid = await get_nodes_tool_and_uuid()
+        _, episode_uuid = await get_nodes_tool_and_uuid(_client_for_standard_tools)
         await tool.ainvoke({"episode_uuids": [episode_uuid]})

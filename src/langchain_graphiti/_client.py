@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, AsyncGenerator, Optional, Dict
+from typing import Any, AsyncGenerator, Optional, Dict, Type, Union
 from contextlib import asynccontextmanager
 import weakref
+import importlib
 
 from pydantic import BaseModel, Field, ConfigDict, PrivateAttr
 from langsmith import traceable
@@ -33,11 +34,6 @@ from graphiti_core.driver.driver import GraphDriver
 from graphiti_core.embedder import EmbedderClient
 from graphiti_core.llm_client import LLMClient
 from graphiti_core.errors import GraphitiError
-from graphiti_core.driver.neo4j_driver import Neo4jDriver
-from graphiti_core.llm_client.gemini_client import GeminiClient, LLMConfig
-from graphiti_core.embedder.gemini import GeminiEmbedder, GeminiEmbedderConfig
-from graphiti_core.cross_encoder.gemini_reranker_client import GeminiRerankerClient
-
 
 # Import custom exceptions and utilities
 from .exceptions import (
@@ -47,6 +43,17 @@ from .exceptions import (
     GraphitiOperationError,
 )
 from .utils import validate_config_dict, safe_sync_run
+from .config import (
+    LLMProvider,
+    DriverProvider,
+    OpenAIConfig,
+    AzureOpenAIConfig,
+    GeminiConfig,
+    AnthropicConfig,
+    GroqConfig,
+    Neo4jConfig,
+    FalkorDBConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -524,81 +531,54 @@ class GraphitiClient(BaseModel):
         )
     
 
-def create_graphiti_client(
-    driver: Optional["GraphDriver"] = None,
-    llm_client: Optional["LLMClient"] = None,
-    embedder: Optional["EmbedderClient"] = None,
-    cross_encoder: Optional["CrossEncoderClient"] = None,
-    **kwargs,
-) -> "GraphitiClient":
+class GraphitiClientFactory:
     """
-    Convenience function to create a GraphitiClient with sensible defaults.
-
-    This function simplifies the setup process by allowing you to either pass
-    pre-configured clients or letting it create default clients (OpenAI and Neo4j)
-    based on environment variables.
-
-    Environment Variables for default clients:
-    - NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD (for Neo4j driver)
-    - GEMINI_API_KEY (for Gemini clients)
-
-    Args:
-        driver: A pre-configured graph database driver. If None, a Neo4jDriver
-                is created using environment variables.
-        llm_client: A pre-configured LLM client. If None, a GeminiClient is
-                    created using environment variables.
-        embedder: A pre-configured embedder client. If None, a GeminiEmbedder
-                  is created using environment variables.
-        cross_encoder: A pre-configured cross-encoder. If None, a
-                       GeminiRerankerClient is created.
-        **kwargs: Additional arguments for GraphitiClient.from_connections().
-
-    Returns:
-        A configured GraphitiClient instance.
-        
-    Raises:
-        GraphitiConfigurationError: If required environment variables are missing
-                                   or configuration is invalid.
-    """
-    import os
+    Factory for creating GraphitiClient instances with various providers.
     
-    try:
-        if driver is None:
-            uri = os.getenv("NEO4J_URI")
-            user = os.getenv("NEO4J_USER")
-            password = os.getenv("NEO4J_PASSWORD")
+    This factory simplifies the process of configuring and instantiating
+    Graphiti by dynamically loading the required clients based on user
+    configuration. It supports conditional imports to avoid installing
+    unnecessary dependencies.
+    """
 
-            if not all([uri, user, password]):
-                raise GraphitiConfigurationError(
-                    "NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD must be set in environment "
-                    "variables if a driver is not provided.",
-                    invalid_config={"NEO4J_URI": bool(uri), "NEO4J_USER": bool(user), "NEO4J_PASSWORD": bool(password)}
-                )
-            driver = Neo4jDriver(uri=uri, user=user, password=password)
+    @staticmethod
+    def _import_class(module_path: str, class_name: str, extra: str) -> Type:
+        """Dynamically import a class and handle ImportErrors."""
+        try:
+            module = importlib.import_module(module_path)
+            return getattr(module, class_name)
+        except ImportError:
+            raise ImportError(
+                f"The '{class_name}' client requires the '{extra}' extra. "
+                f"Please install it with: pip install langchain-graphiti[{extra}]"
+            ) from None
+        except AttributeError:
+            raise ImportError(f"Class '{class_name}' not found in module '{module_path}'.")
 
-        if llm_client is None:
-            if not os.getenv("GEMINI_API_KEY"):
-                raise GraphitiConfigurationError(
-                    "GEMINI_API_KEY must be set in environment variables if llm_client is not provided.",
-                    invalid_config={"GEMINI_API_KEY": False}
-                )
-            llm_client = GeminiClient()
-
-        if embedder is None:
-            if not os.getenv("GEMINI_API_KEY"):
-                raise GraphitiConfigurationError(
-                    "GEMINI_API_KEY must be set in environment variables if embedder is not provided.",
-                    invalid_config={"GEMINI_API_KEY": False}
-                )
-            embedder = GeminiEmbedder()
-
-        if cross_encoder is None:
-            if not os.getenv("GEMINI_API_KEY"):
-                raise GraphitiConfigurationError(
-                    "GEMINI_API_KEY must be set in environment variables if cross_encoder is not provided.",
-                    invalid_config={"GEMINI_API_KEY": False}
-                )
-            cross_encoder = GeminiRerankerClient()
+    @classmethod
+    def create(
+        cls,
+        llm_provider: LLMProvider,
+        driver_provider: DriverProvider,
+        llm_config: Union[OpenAIConfig, AzureOpenAIConfig, GeminiConfig, AnthropicConfig, GroqConfig],
+        driver_config: Union[Neo4jConfig, FalkorDBConfig],
+        **kwargs: Any,
+    ) -> "GraphitiClient":
+        """
+        Create a GraphitiClient with the specified providers and configurations.
+        
+        Args:
+            llm_provider: The LLM provider to use.
+            driver_provider: The graph database driver to use.
+            llm_config: The configuration for the LLM provider.
+            driver_config: The configuration for the graph driver.
+            **kwargs: Additional arguments for GraphitiClient.from_connections().
+            
+        Returns:
+            A configured GraphitiClient instance.
+        """
+        driver = cls._create_driver(driver_provider, driver_config)
+        llm_client, embedder, cross_encoder = cls._create_llm_services(llm_provider, llm_config)
 
         return GraphitiClient.from_connections(
             driver=driver,
@@ -607,15 +587,100 @@ def create_graphiti_client(
             cross_encoder=cross_encoder,
             **kwargs,
         )
-        
-    except Exception as e:
-        if isinstance(e, GraphitiClientError):
-            raise
-        raise GraphitiConfigurationError(f"Failed to create GraphitiClient: {e}") from e
+
+    @classmethod
+    def _create_driver(cls, provider: DriverProvider, config: Union[Neo4jConfig, FalkorDBConfig]) -> GraphDriver:
+        """Create a graph driver instance."""
+        if provider == DriverProvider.NEO4J:
+            Neo4jDriver = cls._import_class("graphiti_core.driver.neo4j_driver", "Neo4jDriver", "neo4j")
+            return Neo4jDriver(**config.model_dump())
+        elif provider == DriverProvider.FALKORDB:
+            FalkorDBDriver = cls._import_class("graphiti_core.driver.falkordb_driver", "FalkorDBDriver", "falkordb")
+            return FalkorDBDriver(**config.model_dump())
+        raise GraphitiConfigurationError(f"Unsupported driver provider: {provider}")
+
+    @classmethod
+    def _create_llm_services(
+        cls, provider: LLMProvider, config: Any
+    ) -> Tuple[LLMClient, EmbedderClient, CrossEncoderClient]:
+        """Create instances of LLM, embedder, and cross-encoder clients."""
+        if provider in [LLMProvider.OPENAI, LLMProvider.OLLAMA]:
+            return cls._create_openai_compatible_clients(config)
+        elif provider == LLMProvider.AZURE_OPENAI:
+            return cls._create_azure_openai_clients(config)
+        elif provider == LLMProvider.GEMINI:
+            return cls._create_gemini_clients(config)
+        elif provider == LLMProvider.ANTHROPIC:
+            return cls._create_anthropic_clients(config)
+        elif provider == LLMProvider.GROQ:
+            return cls._create_groq_clients(config)
+        raise GraphitiConfigurationError(f"Unsupported LLM provider: {provider}")
+
+    @classmethod
+    def _create_openai_compatible_clients(cls, config: OpenAIConfig):
+        """Create clients for OpenAI and compatible services like Ollama."""
+        OpenAIClient = cls._import_class("graphiti_core.llm_client.openai_client", "OpenAIClient", "openai")
+        OpenAIEmbedder = cls._import_class("graphiti_core.embedder.openai", "OpenAIEmbedder", "openai")
+        OpenAIRerankerClient = cls._import_class("graphiti_core.cross_encoder.openai_reranker_client", "OpenAIRerankerClient", "openai")
+        LLMConfig = cls._import_class("graphiti_core.llm_client.config", "LLMConfig", "openai")
+        OpenAIEmbedderConfig = cls._import_class("graphiti_core.embedder.openai", "OpenAIEmbedderConfig", "openai")
+
+        llm_config = LLMConfig(api_key=config.api_key, model=config.model, small_model=config.small_model, base_url=config.base_url)
+        llm_client = OpenAIClient(config=llm_config)
+        embedder_config = OpenAIEmbedderConfig(
+            api_key=config.api_key,
+            embedding_model=config.embedding_model,
+            embedding_dim=config.embedding_dim,
+            base_url=config.base_url,
+        )
+        embedder = OpenAIEmbedder(config=embedder_config)
+        cross_encoder = OpenAIRerankerClient(client=llm_client, config=llm_config)
+        return llm_client, embedder, cross_encoder
+
+    @classmethod
+    def _create_azure_openai_clients(cls, config: AzureOpenAIConfig):
+        """Create clients for Azure OpenAI."""
+        # This requires more complex setup with multiple client instances
+        raise NotImplementedError("Azure OpenAI client creation is not yet implemented in this factory.")
+
+    @classmethod
+    def _create_gemini_clients(cls, config: GeminiConfig):
+        """Create clients for Google Gemini."""
+        GeminiClient = cls._import_class("graphiti_core.llm_client.gemini_client", "GeminiClient", "gemini")
+        GeminiEmbedder = cls._import_class("graphiti_core.embedder.gemini", "GeminiEmbedder", "gemini")
+        GeminiRerankerClient = cls._import_class("graphiti_core.cross_encoder.gemini_reranker_client", "GeminiRerankerClient", "gemini")
+        LLMConfig = cls._import_class("graphiti_core.llm_client.gemini_client", "LLMConfig", "gemini")
+        GeminiEmbedderConfig = cls._import_class("graphiti_core.embedder.gemini", "GeminiEmbedderConfig", "gemini")
+
+        llm_config = LLMConfig(api_key=config.api_key, model=config.model)
+        llm_client = GeminiClient(config=llm_config)
+        embedder_config = GeminiEmbedderConfig(api_key=config.api_key, embedding_model=config.embedding_model)
+        embedder = GeminiEmbedder(config=embedder_config)
+        reranker_config = LLMConfig(api_key=config.api_key, model=config.reranker_model)
+        cross_encoder = GeminiRerankerClient(config=reranker_config)
+        return llm_client, embedder, cross_encoder
+
+    @classmethod
+    def _create_anthropic_clients(cls, config: AnthropicConfig):
+        """Create clients for Anthropic."""
+        # Anthropic often doesn't have a dedicated embedder or reranker in graphiti-core
+        # We might need to pair it with another provider's embedder
+        raise NotImplementedError("Anthropic client creation is not yet fully implemented in this factory.")
+
+    @classmethod
+    def _create_groq_clients(cls, config: GroqConfig):
+        """Create clients for Groq."""
+        raise NotImplementedError("Groq client creation is not yet implemented in this factory.")
 
 
 @asynccontextmanager
-async def graphiti_client_context(**kwargs) -> AsyncGenerator[GraphitiClient, None]:
+async def graphiti_client_context(
+    llm_provider: LLMProvider,
+    driver_provider: DriverProvider,
+    llm_config: Any,
+    driver_config: Any,
+    **kwargs
+) -> AsyncGenerator[GraphitiClient, None]:
     """
     Async context manager for GraphitiClient that ensures proper cleanup.
     
@@ -633,7 +698,13 @@ async def graphiti_client_context(**kwargs) -> AsyncGenerator[GraphitiClient, No
         # Client is automatically closed
         ```
     """
-    client = create_graphiti_client(**kwargs)
+    client = GraphitiClientFactory.create(
+        llm_provider=llm_provider,
+        driver_provider=driver_provider,
+        llm_config=llm_config,
+        driver_config=driver_config,
+        **kwargs,
+    )
     try:
         yield client
     finally:

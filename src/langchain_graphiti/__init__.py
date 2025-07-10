@@ -12,8 +12,19 @@ from ._version import __version__
 # Core Client and Utilities
 from ._client import (
     GraphitiClient,
-    create_graphiti_client,
+    GraphitiClientFactory,
     graphiti_client_context,
+)
+from .config import (
+    LLMProvider,
+    DriverProvider,
+    OpenAIConfig,
+    AzureOpenAIConfig,
+    GeminiConfig,
+    AnthropicConfig,
+    GroqConfig,
+    Neo4jConfig,
+    FalkorDBConfig,
 )
 
 # Custom Exceptions
@@ -55,8 +66,19 @@ __all__ = [
 
     # Client
     "GraphitiClient",
-    "create_graphiti_client",
+    "GraphitiClientFactory",
     "graphiti_client_context",
+
+    # Config
+    "LLMProvider",
+    "DriverProvider",
+    "OpenAIConfig",
+    "AzureOpenAIConfig",
+    "GeminiConfig",
+    "AnthropicConfig",
+    "GroqConfig",
+    "Neo4jConfig",
+    "FalkorDBConfig",
 
     # Exceptions
     "GraphitiClientError",

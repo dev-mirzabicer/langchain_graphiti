@@ -7,8 +7,6 @@ logical sequence to ensure they work together correctly with a live database.
 
 import pytest
 from typing import Generator
-
-from langchain_graphiti import create_graphiti_client
 from langchain_graphiti.tools import (
     AddEpisodeTool,
     SearchGraphTool,
@@ -24,13 +22,9 @@ from langchain_graphiti.utils import safe_sync_run
 TEST_GROUP_ID = "tool-workflow-integration-test"
 
 @pytest.fixture(scope="module")
-def client_for_workflow() -> Generator[GraphitiClient, None, None]:
+def client_for_workflow(client_for_integration: GraphitiClient) -> Generator[GraphitiClient, None, None]:
     """Module-level fixture for the workflow test."""
-    try:
-        client = create_graphiti_client()
-    except Exception as e:
-        pytest.skip(f"Could not create Graphiti client, skipping workflow test: {e}")
-    
+    client = client_for_integration
     yield client
     
     # Final teardown: clean up all test data
@@ -41,7 +35,6 @@ def client_for_workflow() -> Generator[GraphitiClient, None, None]:
                 group_id=TEST_GROUP_ID,
             )
         )
-        safe_sync_run(client.close())
     except Exception:
         pass # Suppress errors during teardown
 

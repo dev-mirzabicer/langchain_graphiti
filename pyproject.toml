@@ -30,10 +30,27 @@ langsmith = "*"
 anyio = "*"
 nest-asyncio = "*"
 
+[tool.poetry.extras]
+openai = ["langchain-openai"]
+azure = ["langchain-openai"]
+gemini = ["google-generativeai"]
+anthropic = ["anthropic"]
+groq = ["groq"]
+ollama = ["langchain-openai"]
+neo4j = ["neo4j"]
+falkordb = ["falkordb"]
+
 [tool.poetry.group.test.dependencies]
 pytest = "^7.0.0"
 pytest-asyncio = "^0.21.0"
 langchain-tests = "*"
+langchain-openai = {version = "*", optional = true}
+google-generativeai = {version = "*", optional = true}
+anthropic = {version = "*", optional = true}
+groq = {version = "*", optional = true}
+neo4j = {version = "*", optional = true}
+falkordb = {version = "*", optional = true}
+
 
 [build-system]
 requires = ["poetry-core"]
@@ -43,3 +60,4 @@ build-backend = "poetry.core.masonry.api"
 markers = [
     "integration: marks tests as integration tests",
 ]
+asyncio_mode = "auto"

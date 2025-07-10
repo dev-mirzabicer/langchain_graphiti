@@ -4,13 +4,12 @@ import pytest
 import time
 from datetime import datetime
 from unittest.mock import patch
-
-from langchain_graphiti import create_graphiti_client
 from langchain_graphiti.retrievers import GraphitiCachedRetriever
+from langchain_graphiti._client import GraphitiClient
 
 
 @pytest.mark.asyncio
-async def test_graphiti_cached_retriever_integration():
+async def test_graphiti_cached_retriever_integration(client_for_integration: GraphitiClient):
     """
     Test the GraphitiCachedRetriever against a live database.
     
@@ -24,11 +23,7 @@ async def test_graphiti_cached_retriever_integration():
     7. Clears the cache and verifies that a new query hits the database again.
     8. Cleans up the test data.
     """
-    try:
-        client = create_graphiti_client()
-    except Exception as e:
-        pytest.skip(f"Could not create Graphiti client, skipping integration test: {e}")
-
+    client = client_for_integration
     test_group_id = "cached-retriever-integration-test"
     test_content = "This is a test for the cached retriever."
     test_doc_name = "Test Document for Cached Retriever"
@@ -73,9 +68,7 @@ async def test_graphiti_cached_retriever_integration():
 
     finally:
         # 6. Teardown
-        if 'client' in locals():
-            await client.graphiti_instance.driver.execute_query(
-                "MATCH (n {group_id: $group_id}) DETACH DELETE n",
-                group_id=test_group_id,
-            )
-            await client.close()
+        await client.graphiti_instance.driver.execute_query(
+            "MATCH (n {group_id: $group_id}) DETACH DELETE n",
+            group_id=test_group_id,
+        )

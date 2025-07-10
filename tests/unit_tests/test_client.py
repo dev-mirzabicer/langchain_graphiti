@@ -1,9 +1,16 @@
 """Unit tests for the GraphitiClient."""
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, ANY
 
-from langchain_graphiti._client import GraphitiClient, create_graphiti_client
+from langchain_graphiti._client import GraphitiClient, GraphitiClientFactory
+from langchain_graphiti.config import (
+    LLMProvider,
+    DriverProvider,
+    OpenAIConfig,
+    Neo4jConfig,
+    GeminiConfig,
+)
 from langchain_graphiti.exceptions import (
     GraphitiConfigurationError,
 )
@@ -102,53 +109,62 @@ def test_initialization_with_instance(mock_graphiti_instance):
     client = GraphitiClient(graphiti_instance=mock_graphiti_instance)
     assert client.graphiti_instance == mock_graphiti_instance
 
-@patch.dict(
-    "os.environ",
-    {
-        "NEO4J_URI": "bolt://localhost:7687",
-        "NEO4J_USER": "neo4j",
-        "NEO4J_PASSWORD": "password",
-        "OPENAI_API_KEY": "test-key",
-    },
-)
-@patch("langchain_graphiti._client.Graphiti")
-@patch("langchain_graphiti._client.GeminiRerankerClient")
-@patch("langchain_graphiti._client.GeminiEmbedder")
-@patch("langchain_graphiti._client.GeminiClient")
-@patch("langchain_graphiti._client.Neo4jDriver")
-def test_create_graphiti_client_with_defaults(
-    MockNeo4jDriver, MockGeminiClient, MockGeminiEmbedder, MockGeminiRerankerClient, MockGraphitiClass
-):
-    """Test the create_graphiti_client factory with default clients."""
-    with patch.dict(
-        "os.environ",
-        {
-            "NEO4J_URI": "bolt://localhost:7687",
-            "NEO4J_USER": "neo4j",
-            "NEO4J_PASSWORD": "password",
-            "GEMINI_API_KEY": "test-key",
-        },
-    ):
-        MockNeo4jDriver.return_value = MockGraphDriver()
-        MockGeminiClient.return_value = MockLLMClient()
-        MockGeminiEmbedder.return_value = MockEmbedderClient()
-        MockGeminiRerankerClient.return_value = MockCrossEncoderClient()
-        MockGraphitiClass.return_value = MockGraphiti()
+@patch("langchain_graphiti._client.GraphitiClientFactory._import_class")
+def test_factory_create_openai_neo4j(mock_import):
+    """Test the factory with OpenAI and Neo4j."""
+    # Mock the imported classes
+    MockNeo4jDriver = MagicMock()
+    MockNeo4jDriver = MagicMock()
+    MockOpenAIClient = MagicMock()
+    MockOpenAIEmbedder = MagicMock()
+    MockOpenAIRerankerClient = MagicMock()
 
-        client = create_graphiti_client()
-        assert isinstance(client, GraphitiClient)
-        MockNeo4jDriver.assert_called_once_with(
-            uri="bolt://localhost:7687", user="neo4j", password="password"
+    def import_side_effect(module, class_name, extra):
+        if class_name == "Neo4jDriver": return MockNeo4jDriver
+        if class_name == "OpenAIClient": return MockOpenAIClient
+        if class_name == "OpenAIEmbedder": return MockOpenAIEmbedder
+        if class_name == "OpenAIRerankerClient": return MockOpenAIRerankerClient
+        if class_name in ["LLMConfig", "OpenAIEmbedderConfig"]: return MagicMock()
+        return MagicMock()
+
+    mock_import.side_effect = import_side_effect
+
+    llm_config = OpenAIConfig(api_key="test-key")
+    driver_config = Neo4jConfig(uri="bolt://localhost", user="neo4j", password="password")
+
+    with patch("langchain_graphiti._client.GraphitiClient.from_connections") as mock_from_connections:
+        GraphitiClientFactory.create(
+            llm_provider=LLMProvider.OPENAI,
+            driver_provider=DriverProvider.NEO4J,
+            llm_config=llm_config,
+            driver_config=driver_config,
         )
-        MockGeminiClient.assert_called_once()
-        MockGeminiEmbedder.assert_called_once()
-        MockGeminiRerankerClient.assert_called_once()
-        MockGraphitiClass.assert_called_once()
+        mock_from_connections.assert_called_once_with(
+            driver=ANY, llm_client=ANY, embedder=ANY, cross_encoder=ANY
+        )
+        MockNeo4jDriver.assert_called_once_with(uri="bolt://localhost", user="neo4j", password="password")
+        MockOpenAIClient.assert_called_once()
+        MockOpenAIEmbedder.assert_called_once()
+        MockOpenAIRerankerClient.assert_called_once()
 
-@patch.dict("os.environ", {}, clear=True)
-def test_create_graphiti_client_missing_env_vars():
-    """Test that create_graphiti_client raises an error if env vars are missing."""
-    with pytest.raises(
-        GraphitiConfigurationError, match="NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD"
-    ):
-        create_graphiti_client()
+@patch("langchain_graphiti._client.importlib.import_module")
+def test_factory_import_error(mock_import_module):
+    """Test that the factory raises an ImportError if a package is missing."""
+    
+    def import_side_effect(module_path):
+        if "gemini" in module_path:
+            raise ImportError(f"No module named '{module_path}'")
+        return MagicMock()
+
+    mock_import_module.side_effect = import_side_effect
+    
+    llm_config = GeminiConfig(api_key="test-key")
+    driver_config = Neo4jConfig(uri="bolt://localhost", user="neo4j", password="password")
+    
+    with pytest.raises(ImportError, match="The 'GeminiClient' client requires the 'gemini' extra."):
+        GraphitiClientFactory.create(
+            llm_provider=LLMProvider.GEMINI,
+            driver_provider=DriverProvider.NEO4J,
+            llm_config=llm_config,
+            driver_config=driver_config,
+        )

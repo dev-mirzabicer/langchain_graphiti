@@ -4,12 +4,12 @@ import pytest
 import asyncio
 from datetime import datetime
 from langchain_core.documents import Document
-from langchain_graphiti import create_graphiti_client
 from langchain_graphiti.retrievers import GraphitiSemanticRetriever
+from langchain_graphiti._client import GraphitiClient
 
 
 @pytest.mark.asyncio
-async def test_graphiti_semantic_retriever_integration():
+async def test_graphiti_semantic_retriever_integration(client_for_integration: GraphitiClient):
     """
     Test the GraphitiSemanticRetriever against a live database.
     
@@ -22,11 +22,7 @@ async def test_graphiti_semantic_retriever_integration():
     6. Asserts that the correct document is returned.
     7. Cleans up the test data.
     """
-    try:
-        client = create_graphiti_client()
-    except Exception as e:
-        pytest.skip(f"Could not create Graphiti client, skipping integration test: {e}")
-
+    client = client_for_integration
     test_group_id = "semantic-retriever-integration-test"
     test_content = "The quick brown fox jumps over the lazy dog."
     test_doc_name = "Test Document for Semantic Retriever"
@@ -72,9 +68,7 @@ async def test_graphiti_semantic_retriever_integration():
 
     finally:
         # 6. Teardown: Clean up the test data
-        if 'client' in locals():
-            await client.graphiti_instance.driver.execute_query(
-                "MATCH (n {group_id: $group_id}) DETACH DELETE n",
-                group_id=test_group_id,
-            )
-            await client.close()
+        await client.graphiti_instance.driver.execute_query(
+            "MATCH (n {group_id: $group_id}) DETACH DELETE n",
+            group_id=test_group_id,
+        )
