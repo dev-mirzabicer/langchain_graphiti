@@ -1,7 +1,7 @@
 # 🦜🔗 Graphiti for LangChain
 
 [![PyPI version](https://badge.fury.io/py/langchain-graphiti.svg)](https://badge.fury.io/py/langchain-graphiti)
-[![CI/CD Status](https://github.com/dev-mirzabicer/langchain-graphiti/actions/workflows/test.yml/badge.svg)](https://github.com/dev-mirzabicer/langchain-graphiti/actions/workflows/test.yml)
+[![Test and Lint](https://github.com/dev-mirzabicer/langchain_graphiti/actions/workflows/test.yml/badge.svg)](https://github.com/dev-mirzabicer/langchain_graphiti/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **`langchain-graphiti`** is a production-grade, high-quality LangChain integration for the [Graphiti](https://github.com/getzep/graphiti) knowledge graph system. It provides a robust set of tools and retrievers that empower LangChain agents with long-term, evolving memory and sophisticated graph-based reasoning capabilities.
