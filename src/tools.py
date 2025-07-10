@@ -3,32 +3,43 @@ LangChain tools for interacting with a Graphiti knowledge graph.
 
 This module provides a comprehensive set of tools that agents can use
 to read from and write to a Graphiti instance. These tools are designed
-to be asynchronous, follow modern LangChain best practices, and provide
-rich error handling and observability.
+to support both synchronous and asynchronous execution, follow modern 
+LangChain best practices, and provide rich error handling and observability.
 
 Key Components:
 - AddEpisodeTool: Add new information to the knowledge graph
 - SearchGraphTool: Query the knowledge graph for relevant information
 - BuildCommunitiesTool: Trigger community detection and organization
 - RemoveEpisodeTool: Remove specific episodes from the graph
+- AddTripletTool: Directly add node-edge-node relationships
+- GetNodesAndEdgesByEpisodeTool: Retrieve graph data for specific episodes
+- BuildIndicesAndConstraintsTool: Set up database indices and constraints
 """
 
 from __future__ import annotations
 
-from typing import List, Optional, Type, Annotated
+import asyncio
+from typing import List, Optional, Type, Annotated, Dict, Any
 
 from langchain_core.tools import BaseTool, InjectedToolArg
 from langsmith import traceable
 from pydantic import BaseModel, Field
 
 from ._client import GraphitiClient
-from graphiti_core.nodes import EpisodeType
+from .exceptions import GraphitiToolError, GraphitiClientError
+from .utils import safe_sync_run, format_graph_results, require_client
+from graphiti_core.nodes import EpisodeType, EntityNode
+from graphiti_core.edges import EntityEdge
 from graphiti_core.utils.datetime_utils import utc_now
 from graphiti_core.search.search_helpers import search_results_to_context_string
 from graphiti_core.search.search_config_recipes import (
     COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
 )
-from graphiti_core.errors import GroupIdValidationError, EntityTypeValidationError
+from graphiti_core.errors import (
+    GroupIdValidationError, 
+    EntityTypeValidationError,
+    GraphitiError,
+)
 
 
 # --- AddEpisodeTool ---
@@ -103,7 +114,28 @@ class AddEpisodeTool(BaseTool):
         ),
     ]
 
+    @require_client
+    def _run(
+        self,
+        name: str,
+        episode_body: str,
+        source_description: str,
+        group_id: str = "",
+        source: str = "message",
+        update_communities: bool = False,
+        **kwargs,
+    ) -> str:
+        """Use the tool synchronously."""
+        try:
+            return safe_sync_run(
+                self._arun(name, episode_body, source_description, group_id, source, update_communities, **kwargs)
+            )
+        except Exception as e:
+            error_msg = f"Failed to add episode '{name}': {e}"
+            raise GraphitiToolError(error_msg, tool_name=self.name) from e
+
     @traceable
+    @require_client
     async def _arun(
         self,
         name: str,
@@ -147,13 +179,17 @@ class AddEpisodeTool(BaseTool):
         except (GroupIdValidationError, EntityTypeValidationError) as e:
             # Catch specific validation errors from Graphiti
             return f"❌ Validation Error: {str(e)}. Please correct the input and try again."
+        except GraphitiError as e:
+            # Catch Graphiti core errors
+            return f"❌ Graphiti Error: {str(e)}. Please check the episode content and try again."
         except Exception as e:
             # General fallback for other errors
-            return (
+            error_msg = (
                 f"❌ Failed to add episode to knowledge graph. "
                 f"Error: {type(e).__name__}: {str(e)}. "
                 f"Please check the episode content and parameters and try again."
             )
+            raise GraphitiToolError(error_msg, tool_name=self.name) from e
 
 
 # --- SearchGraphTool ---
@@ -205,7 +241,25 @@ class SearchGraphTool(BaseTool):
         ),
     ]
 
+    @require_client
+    def _run(
+        self, 
+        query: str, 
+        group_ids: Optional[List[str]] = None, 
+        max_results: int = 10,
+        **kwargs
+    ) -> str:
+        """Use the tool synchronously."""
+        try:
+            return safe_sync_run(
+                self._arun(query, group_ids, max_results, **kwargs)
+            )
+        except Exception as e:
+            error_msg = f"Failed to search knowledge graph for '{query[:50]}...': {e}"
+            raise GraphitiToolError(error_msg, tool_name=self.name) from e
+
     @traceable
+    @require_client
     async def _arun(
         self, 
         query: str, 
@@ -258,11 +312,14 @@ class SearchGraphTool(BaseTool):
             
             return context_summary + metadata
             
+        except GraphitiError as e:
+            return f"❌ Graphiti Error during search: {str(e)}. Please try rephrasing your query."
         except Exception as e:
-            return (
+            error_msg = (
                 f"❌ Error occurred during knowledge graph search: {type(e).__name__}: {str(e)}. "
                 f"Please try rephrasing your query or check the search parameters."
             )
+            raise GraphitiToolError(error_msg, tool_name=self.name) from e
 
 
 # --- BuildCommunitiesTool ---
@@ -303,7 +360,23 @@ class BuildCommunitiesTool(BaseTool):
         ),
     ]
 
+    @require_client
+    def _run(
+        self, 
+        group_ids: Optional[List[str]] = None,
+        **kwargs
+    ) -> str:
+        """Use the tool synchronously."""
+        try:
+            return safe_sync_run(
+                self._arun(group_ids, **kwargs)
+            )
+        except Exception as e:
+            error_msg = f"Failed to build communities: {e}"
+            raise GraphitiToolError(error_msg, tool_name=self.name) from e
+
     @traceable
+    @require_client
     async def _arun(
         self, 
         group_ids: Optional[List[str]] = None,
@@ -321,11 +394,14 @@ class BuildCommunitiesTool(BaseTool):
                 f"This should improve search relevance and knowledge discovery."
             )
             
+        except GraphitiError as e:
+            return f"❌ Graphiti Error building communities: {str(e)}. This may be due to insufficient data in the graph."
         except Exception as e:
-            return (
+            error_msg = (
                 f"❌ Failed to build communities: {type(e).__name__}: {str(e)}. "
                 f"This may be due to insufficient data in the graph or processing issues."
             )
+            raise GraphitiToolError(error_msg, tool_name=self.name) from e
 
 
 # --- RemoveEpisodeTool ---
@@ -365,7 +441,23 @@ class RemoveEpisodeTool(BaseTool):
         ),
     ]
 
+    @require_client
+    def _run(
+        self, 
+        episode_uuids: List[str],
+        **kwargs
+    ) -> str:
+        """Use the tool synchronously."""
+        try:
+            return safe_sync_run(
+                self._arun(episode_uuids, **kwargs)
+            )
+        except Exception as e:
+            error_msg = f"Failed to remove episodes {episode_uuids}: {e}"
+            raise GraphitiToolError(error_msg, tool_name=self.name) from e
+
     @traceable
+    @require_client
     async def _arun(
         self, 
         episode_uuids: List[str],
@@ -383,8 +475,10 @@ class RemoveEpisodeTool(BaseTool):
                 try:
                     await self.client.graphiti_instance.remove_episode(episode_uuid)
                     successful_removals.append(episode_uuid)
+                except GraphitiError as e:
+                    failed_removals.append((episode_uuid, f"Graphiti Error: {str(e)}"))
                 except Exception as e:
-                    failed_removals.append((episode_uuid, str(e)))
+                    failed_removals.append((episode_uuid, f"{type(e).__name__}: {str(e)}"))
             
             # Build detailed response
             response_parts = []
@@ -411,15 +505,319 @@ class RemoveEpisodeTool(BaseTool):
             return " ".join(response_parts)
             
         except Exception as e:
-            return (
+            error_msg = (
                 f"❌ Error during episode removal: {type(e).__name__}: {str(e)}. "
                 f"Please check the episode UUIDs and try again."
             )
+            raise GraphitiToolError(error_msg, tool_name=self.name) from e
+
+
+# --- AddTripletTool (NEW) ---
+
+
+class AddTripletSchema(BaseModel):
+    """Input schema for the AddTripletTool."""
+
+    source_node_name: str = Field(
+        ...,
+        description="Name of the source entity node.",
+    )
+    source_node_labels: List[str] = Field(
+        default=["Entity"],
+        description="Labels for the source node (default: ['Entity']).",
+    )
+    edge_name: str = Field(
+        ...,
+        description="Name/type of the relationship edge.",
+    )
+    edge_fact: str = Field(
+        ...,
+        description="Descriptive fact about the relationship.",
+    )
+    target_node_name: str = Field(
+        ...,
+        description="Name of the target entity node.",
+    )
+    target_node_labels: List[str] = Field(
+        default=["Entity"],
+        description="Labels for the target node (default: ['Entity']).",
+    )
+    group_id: str = Field(
+        default="",
+        description="Optional group ID to partition the graph.",
+    )
+
+
+class AddTripletTool(BaseTool):
+    """
+    A tool to directly add a triplet (source_node -> edge -> target_node) 
+    to the Graphiti knowledge graph.
+    
+    This provides a way to add structured knowledge directly without going 
+    through episode processing. Useful for adding facts, relationships, or 
+    structured data when you know the exact graph structure you want.
+    """
+
+    name: str = "add_triplet"
+    description: str = (
+        "Directly adds a structured triplet (source_node -> relationship -> target_node) "
+        "to the knowledge graph. Use this when you have explicit structured knowledge "
+        "to add, such as facts, relationships, or when importing from structured data sources."
+    )
+    args_schema: Type[BaseModel] = AddTripletSchema
+    
+    client: Annotated[
+        GraphitiClient,
+        InjectedToolArg(
+            description="The GraphitiClient instance to use for graph operations.",
+        ),
+    ]
+
+    @require_client
+    def _run(
+        self,
+        source_node_name: str,
+        source_node_labels: List[str],
+        edge_name: str,
+        edge_fact: str,
+        target_node_name: str,
+        target_node_labels: List[str],
+        group_id: str = "",
+        **kwargs,
+    ) -> str:
+        """Use the tool synchronously."""
+        try:
+            return safe_sync_run(
+                self._arun(source_node_name, source_node_labels, edge_name, edge_fact,
+                          target_node_name, target_node_labels, group_id, **kwargs)
+            )
+        except Exception as e:
+            error_msg = f"Failed to add triplet {source_node_name} -[{edge_name}]-> {target_node_name}: {e}"
+            raise GraphitiToolError(error_msg, tool_name=self.name) from e
+
+    @traceable
+    @require_client
+    async def _arun(
+        self,
+        source_node_name: str,
+        source_node_labels: List[str],
+        edge_name: str,
+        edge_fact: str,
+        target_node_name: str,
+        target_node_labels: List[str],
+        group_id: str = "",
+        **kwargs,
+    ) -> str:
+        """Use the tool asynchronously."""
+        try:
+            # Create nodes and edge using Graphiti's data structures
+            source_node = EntityNode(
+                name=source_node_name,
+                labels=source_node_labels,
+                group_id=group_id,
+                created_at=utc_now(),
+            )
+            
+            target_node = EntityNode(
+                name=target_node_name,
+                labels=target_node_labels,
+                group_id=group_id,
+                created_at=utc_now(),
+            )
+            
+            edge = EntityEdge(
+                source_node_uuid=source_node.uuid,
+                target_node_uuid=target_node.uuid,
+                name=edge_name,
+                fact=edge_fact,
+                group_id=group_id,
+                created_at=utc_now(),
+                valid_at=utc_now(),
+            )
+            
+            # Add the triplet using Graphiti's add_triplet method
+            await self.client.graphiti_instance.add_triplet(source_node, edge, target_node)
+            
+            return (
+                f"✅ Successfully added triplet: {source_node_name} -[{edge_name}]-> {target_node_name}. "
+                f"Fact: {edge_fact}. The knowledge graph has been updated with this structured relationship."
+            )
+            
+        except GraphitiError as e:
+            return f"❌ Graphiti Error adding triplet: {str(e)}. Please check the node and edge parameters."
+        except Exception as e:
+            error_msg = (
+                f"❌ Failed to add triplet: {type(e).__name__}: {str(e)}. "
+                f"Please check the node and edge parameters and try again."
+            )
+            raise GraphitiToolError(error_msg, tool_name=self.name) from e
+
+
+# --- GetNodesAndEdgesByEpisodeTool (NEW) ---
+
+
+class GetNodesAndEdgesByEpisodeSchema(BaseModel):
+    """Input schema for the GetNodesAndEdgesByEpisodeTool."""
+
+    episode_uuids: List[str] = Field(
+        ...,
+        description="List of episode UUIDs to retrieve nodes and edges for.",
+    )
+
+
+class GetNodesAndEdgesByEpisodeTool(BaseTool):
+    """
+    A tool to retrieve all nodes and edges associated with specific episodes.
+    
+    This tool allows you to see what structured knowledge (entities and relationships)
+    was extracted from particular episodes, useful for understanding how episodes
+    were processed or for debugging knowledge extraction.
+    """
+
+    name: str = "get_nodes_and_edges_by_episode"
+    description: str = (
+        "Retrieves all nodes (entities) and edges (relationships) that were extracted "
+        "from specific episodes. Use this to understand what structured knowledge was "
+        "derived from particular episodes or to debug knowledge extraction results."
+    )
+    args_schema: Type[BaseModel] = GetNodesAndEdgesByEpisodeSchema
+    
+    client: Annotated[
+        GraphitiClient,
+        InjectedToolArg(
+            description="The GraphitiClient instance to use for graph operations.",
+        ),
+    ]
+
+    @require_client
+    def _run(
+        self, 
+        episode_uuids: List[str],
+        **kwargs
+    ) -> str:
+        """Use the tool synchronously."""
+        try:
+            return safe_sync_run(
+                self._arun(episode_uuids, **kwargs)
+            )
+        except Exception as e:
+            error_msg = f"Failed to get nodes and edges for episodes {episode_uuids}: {e}"
+            raise GraphitiToolError(error_msg, tool_name=self.name) from e
+
+    @traceable
+    @require_client
+    async def _arun(
+        self, 
+        episode_uuids: List[str],
+        **kwargs
+    ) -> str:
+        """Use the tool asynchronously."""
+        if not episode_uuids:
+            return "⚠️ No episode UUIDs provided. Please specify which episodes to analyze."
+            
+        try:
+            # Use Graphiti's get_nodes_and_edges_by_episode method
+            search_results = await self.client.graphiti_instance.get_nodes_and_edges_by_episode(episode_uuids)
+            
+            # Use the utility function to format results
+            formatted_results = format_graph_results(search_results)
+            
+            result_header = f"📊 Graph elements extracted from {len(episode_uuids)} episode(s):"
+            return f"{result_header}\n{formatted_results}"
+            
+        except GraphitiError as e:
+            return f"❌ Graphiti Error retrieving nodes and edges: {str(e)}. Please check the episode UUIDs."
+        except Exception as e:
+            error_msg = (
+                f"❌ Error retrieving nodes and edges: {type(e).__name__}: {str(e)}. "
+                f"Please check the episode UUIDs and try again."
+            )
+            raise GraphitiToolError(error_msg, tool_name=self.name) from e
+
+
+# --- BuildIndicesAndConstraintsTool (NEW) ---
+
+
+class BuildIndicesAndConstraintsSchema(BaseModel):
+    """Input schema for the BuildIndicesAndConstraintsTool."""
+
+    delete_existing: bool = Field(
+        default=False,
+        description="Whether to delete existing indices before creating new ones.",
+    )
+
+
+class BuildIndicesAndConstraintsTool(BaseTool):
+    """
+    A tool to build database indices and constraints for optimal performance.
+    
+    This tool sets up the necessary database indices and constraints to optimize
+    query performance for the knowledge graph. Should typically be run once during
+    initial setup or when updating the database schema.
+    """
+
+    name: str = "build_indices_and_constraints"
+    description: str = (
+        "Builds database indices and constraints to optimize knowledge graph performance. "
+        "This sets up the necessary database schema optimizations for efficient querying. "
+        "Should typically be run once during initial setup or after schema changes."
+    )
+    args_schema: Type[BaseModel] = BuildIndicesAndConstraintsSchema
+    
+    client: Annotated[
+        GraphitiClient,
+        InjectedToolArg(
+            description="The GraphitiClient instance to use for graph operations.",
+        ),
+    ]
+
+    @require_client
+    def _run(
+        self, 
+        delete_existing: bool = False,
+        **kwargs
+    ) -> str:
+        """Use the tool synchronously."""
+        try:
+            return safe_sync_run(
+                self._arun(delete_existing, **kwargs)
+            )
+        except Exception as e:
+            error_msg = f"Failed to build indices and constraints: {e}"
+            raise GraphitiToolError(error_msg, tool_name=self.name) from e
+
+    @traceable
+    @require_client
+    async def _arun(
+        self, 
+        delete_existing: bool = False,
+        **kwargs
+    ) -> str:
+        """Use the tool asynchronously."""
+        try:
+            await self.client.graphiti_instance.build_indices_and_constraints(delete_existing)
+            
+            action = "rebuilt" if delete_existing else "built"
+            return (
+                f"✅ Successfully {action} database indices and constraints. "
+                f"The knowledge graph database is now optimized for efficient querying. "
+                f"{'Existing indices were deleted first. ' if delete_existing else ''}"
+                f"Query performance should be significantly improved."
+            )
+            
+        except GraphitiError as e:
+            return f"❌ Graphiti Error building indices: {str(e)}. This operation requires appropriate database permissions."
+        except Exception as e:
+            error_msg = (
+                f"❌ Failed to build indices and constraints: {type(e).__name__}: {str(e)}. "
+                f"This operation requires appropriate database permissions and may take time on large graphs."
+            )
+            raise GraphitiToolError(error_msg, tool_name=self.name) from e
 
 
 def create_agent_tools(client: GraphitiClient) -> list:
     """
-    Create a standard set of Graphiti tools for agent use.
+    Create a comprehensive set of Graphiti tools for agent use.
     
     Args:
         client: GraphitiClient instance
@@ -442,4 +840,37 @@ def create_agent_tools(client: GraphitiClient) -> list:
         SearchGraphTool(client=client),
         BuildCommunitiesTool(client=client),
         RemoveEpisodeTool(client=client),
+        AddTripletTool(client=client),
+        GetNodesAndEdgesByEpisodeTool(client=client),
+        BuildIndicesAndConstraintsTool(client=client),
     ]
+
+
+def create_basic_agent_tools(client: GraphitiClient) -> list:
+    """
+    Create a basic set of Graphiti tools for simple agent use cases.
+    
+    Args:
+        client: GraphitiClient instance
+        
+    Returns:
+        List of essential tools for basic knowledge graph operations
+    """
+    return [
+        AddEpisodeTool(client=client),
+        SearchGraphTool(client=client),
+        BuildCommunitiesTool(client=client),
+    ]
+
+
+def create_advanced_agent_tools(client: GraphitiClient) -> list:
+    """
+    Create an advanced set of Graphiti tools for complex agent use cases.
+    
+    Args:
+        client: GraphitiClient instance
+        
+    Returns:
+        List of all available tools for advanced knowledge graph operations
+    """
+    return create_agent_tools(client)  # Returns all tools
