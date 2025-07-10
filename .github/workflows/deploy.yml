@@ -18,7 +18,7 @@ jobs:
       - name: Install Poetry
         uses: snok/install-poetry@v1
       - name: Install dependencies
-        run: poetry install --no-dev
+        run: poetry install --without dev
       - name: Build package
         run: poetry build
       - name: Publish to PyPI
