@@ -23,6 +23,7 @@ from langchain_core.callbacks import (
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.runnables import ConfigurableField
+from langchain_core.runnables.config import RunnableConfig
 from langsmith import traceable
 from pydantic import Field
 
@@ -156,7 +157,7 @@ class GraphitiRetriever(BaseRetriever):
                 query=query,
                 group_ids=self.group_ids,
                 config=search_config,
-                search_filter=self.search_filter,
+                search_filter=self.search_filter or SearchFilters(),
                 query_vector=None,  # Let Graphiti generate it internally
                 **valid_kwargs,
             )
@@ -188,7 +189,7 @@ class GraphitiRetriever(BaseRetriever):
         self, search_results: SearchResults, scores: Dict[str, float]
     ) -> List[Document]:
         """Converts Graphiti search results into LangChain Documents."""
-        docs = []
+        docs: List[Document] = []
         if not search_results.episodes:
             return docs
 
@@ -213,42 +214,43 @@ class GraphitiRetriever(BaseRetriever):
         return docs
 
     @require_client
-    async def astream(self, query: str) -> AsyncIterator[Document]:
+    async def astream(
+        self, input: str, config: Optional[RunnableConfig] = None, **kwargs: Any
+    ) -> AsyncIterator[List[Document]]:
         """
-        Asynchronously stream documents one by one.
+        Asynchronously stream documents.
         
         This provides proper async streaming support for use in async contexts.
         """
         try:
-            search_results, scores = await self._perform_search_with_scores(query)
+            search_results, scores = await self._perform_search_with_scores(
+                input, **kwargs
+            )
             docs = await self._convert_search_results_to_docs(search_results, scores)
-            
-            for doc in docs:
-                yield doc
+            yield docs
         except Exception as e:
-            logger.error(f"Streaming failed for query '{query[:50]}...': {e}")
+            logger.error(f"Streaming failed for query '{input[:50]}...': {e}")
             raise GraphitiRetrieverError(f"Failed to stream results: {e}") from e
 
     @require_client
-    def stream(self, query: str) -> Iterator[Document]:
+    def stream(
+        self, input: str, config: Optional[RunnableConfig] = None, **kwargs: Any
+    ) -> Iterator[List[Document]]:
         """
-        Stream documents one by one with proper async context handling.
-        
-        This method handles both sync and async contexts correctly by collecting
-        all documents first, then yielding them.
+        Stream documents with proper async context handling.
         """
         try:
-            async def _collect_docs():
-                docs = []
-                async for doc in self.astream(query):
-                    docs.append(doc)
-                return docs
-            
+            async def _collect_docs() -> List[List[Document]]:
+                all_docs = []
+                async for doc_list in self.astream(input, config=config, **kwargs):
+                    all_docs.append(doc_list)
+                return all_docs
+
             # safe_sync_run will handle the event loop correctly
-            docs_list = safe_sync_run(_collect_docs())
-            yield from docs_list
+            docs_lists = safe_sync_run(_collect_docs())
+            yield from docs_lists
         except Exception as e:
-            logger.error(f"Sync streaming failed for query '{query[:50]}...': {e}")
+            logger.error(f"Sync streaming failed for query '{input[:50]}...': {e}")
             raise GraphitiRetrieverError(f"Failed to stream results: {e}") from e
 
     @traceable
@@ -463,9 +465,9 @@ class GraphitiCachedRetriever(GraphitiRetriever):
     Useful for development, testing, or when the same queries are made frequently.
     """
     
-    def __init__(self, client: GraphitiClient, cache_ttl_seconds: int = 300, **kwargs):
+    def __init__(self, client: GraphitiClient, cache_ttl_seconds: int = 300, **kwargs: Any):
         super().__init__(client=client, **kwargs)
-        self._cache = {}
+        self._cache: Dict[str, Tuple[List[Document], float]] = {}
         self._cache_ttl = cache_ttl_seconds
         
     def _get_cache_key(self, query: str) -> str:

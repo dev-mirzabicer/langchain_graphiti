@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, AsyncGenerator, Optional, Dict, Tuple, Type, Union
+from typing import Any, AsyncGenerator, Optional, Dict, Tuple, Type, Union, ClassVar, Callable
 from contextlib import asynccontextmanager
 import weakref
 import importlib
@@ -104,6 +104,10 @@ class GraphitiClient(BaseModel):
         description="The core, fully-configured Graphiti instance.",
     )
     
+    database: Optional[str] = Field(
+        default=None, description="The name of the database to connect to."
+    )
+    
     # Configuration options
     auto_health_check: bool = Field(
         default=True,
@@ -124,7 +128,9 @@ class GraphitiClient(BaseModel):
     _is_closed: bool = PrivateAttr(default=False)
     _health_status: Dict[str, Any] = PrivateAttr(default_factory=dict)
     _health_checked: bool = PrivateAttr(default=False)
-    _instance_registry: Optional[weakref.WeakSet] = PrivateAttr(default=None)
+    
+    # Class-level registry for all instances
+    _global_instance_registry: ClassVar[weakref.WeakSet] = weakref.WeakSet()
     
     # Modern Pydantic v2 configuration
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
@@ -143,10 +149,7 @@ class GraphitiClient(BaseModel):
         super().__init__(graphiti_instance=graphiti_instance, **kwargs)
         
         # Initialize instance registry for cleanup tracking
-        if not hasattr(GraphitiClient, '_global_instance_registry'):
-            GraphitiClient._global_instance_registry = weakref.WeakSet()
         GraphitiClient._global_instance_registry.add(self)
-        self._instance_registry = GraphitiClient._global_instance_registry
         
         # Health check will be performed lazily on first request
         logger.debug("GraphitiClient initialized. Health check will be performed on first request.")
@@ -159,6 +162,7 @@ class GraphitiClient(BaseModel):
         llm_client: LLMClient,
         embedder: EmbedderClient,
         cross_encoder: CrossEncoderClient,
+        database: Optional[str] = None,
         store_raw_episode_content: bool = True,
         max_coroutines: Optional[int] = None,
         **kwargs: Any,
@@ -174,6 +178,7 @@ class GraphitiClient(BaseModel):
             llm_client: A configured LLM client (e.g., OpenAIClient).
             embedder: A configured embedder client (e.g., OpenAIEmbedder).
             cross_encoder: A configured cross-encoder client (e.g., OpenAIRerankerClient).
+            database: The name of the database to connect to.
             store_raw_episode_content: Whether to store raw episode content.
                 Defaults to True.
             max_coroutines: Maximum number of concurrent operations.
@@ -218,7 +223,7 @@ class GraphitiClient(BaseModel):
                 **graphiti_kwargs,
             )
             
-            return cls(graphiti_instance=graphiti_instance)
+            return cls(graphiti_instance=graphiti_instance, database=database)
             
         except GraphitiError as e:
             raise GraphitiConnectionError(f"Failed to initialize Graphiti core: {e}") from e
@@ -271,7 +276,7 @@ class GraphitiClient(BaseModel):
 
     async def _perform_health_check(self) -> None:
         """Internal method to perform the actual health check."""
-        health_info = {
+        health_info: Dict[str, Any] = {
             "status": "unknown",
             "timestamp": None,
             "components": {},
@@ -365,15 +370,17 @@ class GraphitiClient(BaseModel):
 
     async def _test_database_connection(self) -> None:
         """Test database connection with a simple query."""
+        if not self.database:
+            raise GraphitiConfigurationError(
+                "No database specified for GraphitiClient. "
+                "Unable to perform database connection health check."
+            )
         try:
             # Use a simple query that should work on any graph database
             driver = self.graphiti_instance.driver
-            session = driver.session()
-            try:
+            async with driver.session(database=self.database) as session:
                 # Simple test query - check if we can connect
                 await session.run("RETURN 1 as test")
-            finally:
-                await session.close()
         except Exception as e:
             raise GraphitiConnectionError(
                 f"Database connection test failed: {e}",
@@ -384,11 +391,11 @@ class GraphitiClient(BaseModel):
             ) from e
 
     async def execute_with_retry(
-        self, 
-        operation: callable, 
-        *args, 
+        self,
+        operation: Callable[..., Any],
+        *args: Any,
         max_retries: Optional[int] = None,
-        **kwargs
+        **kwargs: Any
     ) -> Any:
         """
         Execute an operation with retry logic.
@@ -410,7 +417,8 @@ class GraphitiClient(BaseModel):
         
         for attempt in range(max_retries + 1):
             try:
-                return await operation(*args, **kwargs)
+                result = await operation(*args, **kwargs)
+                return result
             except Exception as e:
                 last_error = e
                 if attempt < max_retries:

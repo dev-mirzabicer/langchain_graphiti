@@ -42,7 +42,7 @@ def safe_sync_run(coro: Any, timeout: Optional[float] = None) -> Any:
     This function uses nest_asyncio to patch the event loop, allowing
     asyncio.run() to be called from within an already running event loop.
     """
-    import nest_asyncio
+    import nest_asyncio  # type: ignore
     nest_asyncio.apply()
     
     if timeout:
@@ -50,7 +50,7 @@ def safe_sync_run(coro: Any, timeout: Optional[float] = None) -> Any:
     return asyncio.run(coro)
 
 
-def validate_config_dict(config: dict, required_keys: list[str], optional_keys: list[str] = None) -> dict:
+def validate_config_dict(config: dict, required_keys: list[str], optional_keys: Optional[list[str]] = None) -> dict:
     """Validate configuration dictionary has required keys."""
     optional_keys = optional_keys or []
     
