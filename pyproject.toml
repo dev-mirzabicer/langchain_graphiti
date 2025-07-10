@@ -44,6 +44,8 @@ falkordb = ["falkordb"]
 pytest = "^7.0.0"
 pytest-asyncio = "^0.21.0"
 langchain-tests = "*"
+ruff = "*"
+mypy = "*"
 langchain-openai = {version = "*", optional = true}
 google-generativeai = {version = "*", optional = true}
 anthropic = {version = "*", optional = true}
