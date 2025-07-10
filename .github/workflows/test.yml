@@ -30,32 +30,24 @@ jobs:
           poetry run mypy src
       - name: Run tests
         env:
-          GRAPHITI_API_KEY: ${{ secrets.GRAPHITI_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
-          AZURE_OPENAI_API_VERSION: ${{ secrets.AZURE_OPENAI_API_VERSION }}
-          AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          NEO4J_URI: ${{ secrets.NEO4J_URI }}
-          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
-          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
-          FALKORDB_URL: ${{ secrets.FALKORDB_URL }}
+            GRAPHITI_CROSS_ENCODER_MODEL: ${{ vars.GRAPHITI_CROSS_ENCODER_MODEL }}
+            GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+            GRAPHITI_LLM_MODEL: ${{ vars.GRAPHITI_LLM_MODEL }}
+            GRAPHITI_EMBEDDER_MODEL: ${{ vars.GRAPHITI_EMBEDDER_MODEL }}
+            NEO4J_URI: ${{ secrets.NEO4J_URI }}
+            NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+            NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+            DEFAULT_DATABASE: ${{ secrets.DEFAULT_DATABASE }}
         run: poetry run pytest --asyncio-mode=auto -m "not integration"
       - name: Run integration tests
         if: success() && matrix.python-version == '3.11'
         env:
-          GRAPHITI_API_KEY: ${{ secrets.GRAPHITI_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
-          AZURE_OPENAI_API_VERSION: ${{ secrets.AZURE_OPENAI_API_VERSION }}
-          AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          NEO4J_URI: ${{ secrets.NEO4J_URI }}
-          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
-          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
-          FALKORDB_URL: ${{ secrets.FALKORDB_URL }}
+            GRAPHITI_CROSS_ENCODER_MODEL: ${{ vars.GRAPHITI_CROSS_ENCODER_MODEL }}
+            GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+            GRAPHITI_LLM_MODEL: ${{ vars.GRAPHITI_LLM_MODEL }}
+            GRAPHITI_EMBEDDER_MODEL: ${{ vars.GRAPHITI_EMBEDDER_MODEL }}
+            NEO4J_URI: ${{ secrets.NEO4J_URI }}
+            NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+            NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+            DEFAULT_DATABASE: ${{ secrets.DEFAULT_DATABASE }}
         run: poetry run pytest --asyncio-mode=auto -m integration
