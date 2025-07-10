@@ -18,15 +18,14 @@ Key Components:
 
 from __future__ import annotations
 
-import asyncio
-from typing import List, Optional, Type, Annotated, Dict, Any, Tuple
+from typing import List, Optional, Type, Annotated, Any, Tuple
 
 from langchain_core.tools import BaseTool, InjectedToolArg
 from langsmith import traceable
 from pydantic import BaseModel, Field
 
 from ._client import GraphitiClient
-from .exceptions import GraphitiToolError, GraphitiClientError
+from .exceptions import GraphitiToolError
 from .utils import safe_sync_run, format_graph_results, require_client
 from graphiti_core.nodes import EpisodeType, EntityNode
 from graphiti_core.edges import EntityEdge

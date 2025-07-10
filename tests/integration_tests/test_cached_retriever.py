@@ -1,7 +1,6 @@
 """Integration tests for GraphitiCachedRetriever."""
 
 import pytest
-import time
 from datetime import datetime
 from unittest.mock import patch
 from langchain_graphiti.retrievers import GraphitiCachedRetriever

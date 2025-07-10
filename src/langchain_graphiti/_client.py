@@ -42,7 +42,7 @@ from .exceptions import (
     GraphitiConfigurationError,
     GraphitiOperationError,
 )
-from .utils import validate_config_dict, safe_sync_run
+from .utils import validate_config_dict
 from .config import (
     LLMProvider,
     DriverProvider,

@@ -1,6 +1,6 @@
 """Custom exception hierarchy for langchain-graphiti."""
 
-from typing import Optional, Any
+from typing import Optional
 from langchain_core.exceptions import LangChainException
 
 

@@ -9,7 +9,7 @@ backend services that Graphiti can use. It includes:
 
 from enum import Enum
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from typing import Optional
 
 # --- Provider Enums ---
 

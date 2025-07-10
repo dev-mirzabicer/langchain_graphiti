@@ -13,7 +13,6 @@ Key Components:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, AsyncIterator, Dict, Iterator, List, Literal, Optional, Tuple
 
@@ -25,11 +24,11 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.runnables import ConfigurableField
 from langsmith import traceable
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from ._client import GraphitiClient
-from .exceptions import GraphitiRetrieverError, GraphitiClientError
-from .utils import require_client, safe_sync_run, format_graph_results
+from .exceptions import GraphitiRetrieverError
+from .utils import require_client, safe_sync_run
 from graphiti_core.search.search_config import (
     SearchConfig,
     SearchResults,

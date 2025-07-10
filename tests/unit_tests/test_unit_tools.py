@@ -1,11 +1,9 @@
 """Unit tests for Graphiti tools."""
 
 import pytest
-from typing import Type, List
 from unittest.mock import MagicMock, AsyncMock
 
 from datetime import datetime
-from langchain_core.tools import BaseTool
 from langchain_graphiti.tools import (
     AddEpisodeTool,
     SearchGraphTool,
@@ -16,12 +14,10 @@ from langchain_graphiti.tools import (
     BuildIndicesAndConstraintsTool,
     create_basic_agent_tools,
     create_advanced_agent_tools,
-    AddEpisodeSchema,
-    SearchGraphSchema,
     GraphitiToolError,
 )
 from langchain_graphiti._client import GraphitiClient
-from graphiti_core.nodes import EntityNode, EpisodicNode, EpisodeType
+from graphiti_core.nodes import EntityNode
 from graphiti_core.edges import EntityEdge
 from graphiti_core.search.search_config import SearchResults
 from graphiti_core.errors import GraphitiError

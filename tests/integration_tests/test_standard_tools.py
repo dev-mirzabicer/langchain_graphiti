@@ -2,7 +2,6 @@
 
 import pytest
 from typing import Type, Dict, Any, Generator, ClassVar, Optional
-from datetime import datetime
 
 from langchain_core.tools import BaseTool
 from langchain_tests.integration_tests.tools import ToolsIntegrationTests

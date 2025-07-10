@@ -1,8 +1,8 @@
 """Unit tests for Graphiti retrievers."""
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
-from datetime import datetime, timedelta
+from unittest.mock import MagicMock, AsyncMock
+from datetime import datetime
 import time
 
 from langchain_core.documents import Document
@@ -14,8 +14,7 @@ from langchain_graphiti.retrievers import (
 )
 from langchain_graphiti._client import GraphitiClient
 from graphiti_core.search.search_config import SearchResults
-from graphiti_core.nodes import EpisodicNode, EpisodeType, EntityNode
-from graphiti_core.edges import EntityEdge
+from graphiti_core.nodes import EpisodicNode, EpisodeType
 
 
 @pytest.fixture
