@@ -39,47 +39,15 @@ def safe_sync_run(coro: Any, timeout: Optional[float] = None) -> Any:
     """
     Safely run an async coroutine in a sync context.
     
-    Handles cases where there's already an event loop running.
+    This function uses nest_asyncio to patch the event loop, allowing
+    asyncio.run() to be called from within an already running event loop.
     """
-    try:
-        loop = asyncio.get_running_loop()
-        # If we're in an async context, we need to use a different approach
-        if loop.is_running():
-            import concurrent.futures
-            import threading
-            
-            def run_in_thread():
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                try:
-                    if timeout:
-                        return new_loop.run_until_complete(asyncio.wait_for(coro, timeout))
-                    else:
-                        return new_loop.run_until_complete(coro)
-                finally:
-                    new_loop.close()
-            
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(run_in_thread)
-                return future.result(timeout=timeout)
-        else:
-            # Use the existing event loop
-            if timeout:
-                return loop.run_until_complete(asyncio.wait_for(coro, timeout))
-            else:
-                return loop.run_until_complete(coro)
-                
-    except RuntimeError:
-        # No event loop running, create a new one
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            if timeout:
-                return loop.run_until_complete(asyncio.wait_for(coro, timeout))
-            else:
-                return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+    import nest_asyncio
+    nest_asyncio.apply()
+    
+    if timeout:
+        return asyncio.run(asyncio.wait_for(coro, timeout))
+    return asyncio.run(coro)
 
 
 def validate_config_dict(config: dict, required_keys: list[str], optional_keys: list[str] = None) -> dict:

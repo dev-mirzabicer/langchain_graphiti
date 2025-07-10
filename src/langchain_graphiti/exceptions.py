@@ -43,11 +43,6 @@ class GraphitiRetrieverError(LangChainGraphitiError):
     pass
 
 
-class GraphitiVectorStoreError(LangChainGraphitiError):
-    """Raised when vector store operations fail."""
-    pass
-
-
 class GraphitiToolError(LangChainGraphitiError):
     """Raised when tool operations fail."""
     
@@ -63,6 +58,5 @@ __all__ = [
     "GraphitiConfigurationError",
     "GraphitiOperationError",
     "GraphitiRetrieverError",
-    "GraphitiVectorStoreError", 
     "GraphitiToolError",
 ]

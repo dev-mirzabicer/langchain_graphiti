@@ -51,9 +51,7 @@ class GraphitiBaseTool(BaseTool):
     
     client: Annotated[
         GraphitiClient,
-        InjectedToolArg(
-            description="The GraphitiClient instance to use for graph operations.",
-        ),
+        InjectedToolArg(),
     ]
 
     def _run(self, *args: Any, **kwargs: Any) -> str:
@@ -181,10 +179,10 @@ class AddEpisodeTool(GraphitiBaseTool):
             )
         except (GroupIdValidationError, EntityTypeValidationError) as e:
             # Catch specific validation errors from Graphiti
-            return f"❌ Validation Error: {str(e)}. Please correct the input and try again."
+            raise GraphitiToolError(f"Validation Error: {e}", tool_name=self.name) from e
         except GraphitiError as e:
             # Catch Graphiti core errors
-            return f"❌ Graphiti Error: {str(e)}. Please check the episode content and try again."
+            raise GraphitiToolError(f"Graphiti Error: {e}", tool_name=self.name) from e
         except Exception as e:
             # General fallback for other errors
             error_msg = (
@@ -292,7 +290,7 @@ class SearchGraphTool(GraphitiBaseTool):
             return context_summary + metadata
             
         except GraphitiError as e:
-            return f"❌ Graphiti Error during search: {str(e)}. Please try rephrasing your query."
+            raise GraphitiToolError(f"Graphiti Error during search: {e}", tool_name=self.name) from e
         except Exception as e:
             error_msg = (
                 f"❌ Error occurred during knowledge graph search: {type(e).__name__}: {str(e)}. "
@@ -352,7 +350,7 @@ class BuildCommunitiesTool(GraphitiBaseTool):
             )
             
         except GraphitiError as e:
-            return f"❌ Graphiti Error building communities: {str(e)}. This may be due to insufficient data in the graph."
+            raise GraphitiToolError(f"Graphiti Error building communities: {e}", tool_name=self.name) from e
         except Exception as e:
             error_msg = (
                 f"❌ Failed to build communities: {type(e).__name__}: {str(e)}. "
@@ -555,7 +553,7 @@ class AddTripletTool(GraphitiBaseTool):
             )
             
         except GraphitiError as e:
-            return f"❌ Graphiti Error adding triplet: {str(e)}. Please check the node and edge parameters."
+            raise GraphitiToolError(f"Graphiti Error adding triplet: {e}", tool_name=self.name) from e
         except Exception as e:
             error_msg = (
                 f"❌ Failed to add triplet: {type(e).__name__}: {str(e)}. "
@@ -615,7 +613,7 @@ class GetNodesAndEdgesByEpisodeTool(GraphitiBaseTool):
             return f"{result_header}\n{formatted_results}"
             
         except GraphitiError as e:
-            return f"❌ Graphiti Error retrieving nodes and edges: {str(e)}. Please check the episode UUIDs."
+            raise GraphitiToolError(f"Graphiti Error retrieving nodes and edges: {e}", tool_name=self.name) from e
         except Exception as e:
             error_msg = (
                 f"❌ Error retrieving nodes and edges: {type(e).__name__}: {str(e)}. "
@@ -673,7 +671,7 @@ class BuildIndicesAndConstraintsTool(GraphitiBaseTool):
             )
             
         except GraphitiError as e:
-            return f"❌ Graphiti Error building indices: {str(e)}. This operation requires appropriate database permissions."
+            raise GraphitiToolError(f"Graphiti Error building indices: {e}", tool_name=self.name) from e
         except Exception as e:
             error_msg = (
                 f"❌ Failed to build indices and constraints: {type(e).__name__}: {str(e)}. "

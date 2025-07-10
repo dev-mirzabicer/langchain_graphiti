@@ -23,7 +23,7 @@ from typing import Any, AsyncGenerator, Optional, Dict
 from contextlib import asynccontextmanager
 import weakref
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, PrivateAttr
 from langsmith import traceable
 
 # Import core Graphiti components for type hinting and instantiation
@@ -33,6 +33,11 @@ from graphiti_core.driver.driver import GraphDriver
 from graphiti_core.embedder import EmbedderClient
 from graphiti_core.llm_client import LLMClient
 from graphiti_core.errors import GraphitiError
+from graphiti_core.driver.neo4j_driver import Neo4jDriver
+from graphiti_core.llm_client.gemini_client import GeminiClient, LLMConfig
+from graphiti_core.embedder.gemini import GeminiEmbedder, GeminiEmbedderConfig
+from graphiti_core.cross_encoder.gemini_reranker_client import GeminiRerankerClient
+
 
 # Import custom exceptions and utilities
 from .exceptions import (
@@ -109,13 +114,13 @@ class GraphitiClient(BaseModel):
     )
     
     # Internal state
-    _is_closed: bool = Field(default=False, exclude=True)
-    _health_status: Dict[str, Any] = Field(default_factory=dict, exclude=True)
-    _health_checked: bool = Field(default=False, exclude=True)
-    _instance_registry: Optional[weakref.WeakSet] = Field(default=None, exclude=True)
+    _is_closed: bool = PrivateAttr(default=False)
+    _health_status: Dict[str, Any] = PrivateAttr(default_factory=dict)
+    _health_checked: bool = PrivateAttr(default=False)
+    _instance_registry: Optional[weakref.WeakSet] = PrivateAttr(default=None)
     
     # Modern Pydantic v2 configuration
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     def __init__(self, graphiti_instance: Graphiti, **kwargs: Any):
         """
@@ -535,17 +540,17 @@ def create_graphiti_client(
 
     Environment Variables for default clients:
     - NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD (for Neo4j driver)
-    - OPENAI_API_KEY (for OpenAI clients)
+    - GEMINI_API_KEY (for Gemini clients)
 
     Args:
         driver: A pre-configured graph database driver. If None, a Neo4jDriver
                 is created using environment variables.
-        llm_client: A pre-configured LLM client. If None, an OpenAIClient is
+        llm_client: A pre-configured LLM client. If None, a GeminiClient is
                     created using environment variables.
-        embedder: A pre-configured embedder client. If None, an OpenAIEmbedder
+        embedder: A pre-configured embedder client. If None, a GeminiEmbedder
                   is created using environment variables.
-        cross_encoder: A pre-configured cross-encoder. If None, an
-                       OpenAIRerankerClient is created.
+        cross_encoder: A pre-configured cross-encoder. If None, a
+                       GeminiRerankerClient is created.
         **kwargs: Additional arguments for GraphitiClient.from_connections().
 
     Returns:
@@ -559,57 +564,41 @@ def create_graphiti_client(
     
     try:
         if driver is None:
-            try:
-                from graphiti_core.driver.neo4j_driver import Neo4jDriver
-                uri = os.getenv("NEO4J_URI")
-                user = os.getenv("NEO4J_USER")
-                password = os.getenv("NEO4J_PASSWORD")
-                
-                if not all([uri, user, password]):
-                    raise GraphitiConfigurationError(
-                        "NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD must be set in environment "
-                        "variables if a driver is not provided.",
-                        invalid_config={"NEO4J_URI": bool(uri), "NEO4J_USER": bool(user), "NEO4J_PASSWORD": bool(password)}
-                    )
-                driver = Neo4jDriver(uri=uri, user=user, password=password)
-            except ImportError as e:
-                raise GraphitiConfigurationError(f"Failed to import Neo4jDriver: {e}") from e
+            uri = os.getenv("NEO4J_URI")
+            user = os.getenv("NEO4J_USER")
+            password = os.getenv("NEO4J_PASSWORD")
+
+            if not all([uri, user, password]):
+                raise GraphitiConfigurationError(
+                    "NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD must be set in environment "
+                    "variables if a driver is not provided.",
+                    invalid_config={"NEO4J_URI": bool(uri), "NEO4J_USER": bool(user), "NEO4J_PASSWORD": bool(password)}
+                )
+            driver = Neo4jDriver(uri=uri, user=user, password=password)
 
         if llm_client is None:
-            try:
-                from graphiti_core.llm_client import OpenAIClient
-                if not os.getenv("OPENAI_API_KEY"):
-                    raise GraphitiConfigurationError(
-                        "OPENAI_API_KEY must be set in environment variables if llm_client is not provided.",
-                        invalid_config={"OPENAI_API_KEY": False}
-                    )
-                llm_client = OpenAIClient()
-            except ImportError as e:
-                raise GraphitiConfigurationError(f"Failed to import OpenAIClient: {e}") from e
+            if not os.getenv("GEMINI_API_KEY"):
+                raise GraphitiConfigurationError(
+                    "GEMINI_API_KEY must be set in environment variables if llm_client is not provided.",
+                    invalid_config={"GEMINI_API_KEY": False}
+                )
+            llm_client = GeminiClient()
 
         if embedder is None:
-            try:
-                from graphiti_core.embedder import OpenAIEmbedder
-                if not os.getenv("OPENAI_API_KEY"):
-                    raise GraphitiConfigurationError(
-                        "OPENAI_API_KEY must be set in environment variables if embedder is not provided.",
-                        invalid_config={"OPENAI_API_KEY": False}
-                    )
-                embedder = OpenAIEmbedder()
-            except ImportError as e:
-                raise GraphitiConfigurationError(f"Failed to import OpenAIEmbedder: {e}") from e
+            if not os.getenv("GEMINI_API_KEY"):
+                raise GraphitiConfigurationError(
+                    "GEMINI_API_KEY must be set in environment variables if embedder is not provided.",
+                    invalid_config={"GEMINI_API_KEY": False}
+                )
+            embedder = GeminiEmbedder()
 
         if cross_encoder is None:
-            try:
-                from graphiti_core.cross_encoder import OpenAIRerankerClient
-                if not os.getenv("OPENAI_API_KEY"):
-                    raise GraphitiConfigurationError(
-                        "OPENAI_API_KEY must be set in environment variables if cross_encoder is not provided.",
-                        invalid_config={"OPENAI_API_KEY": False}
-                    )
-                cross_encoder = OpenAIRerankerClient()
-            except ImportError as e:
-                raise GraphitiConfigurationError(f"Failed to import OpenAIRerankerClient: {e}") from e
+            if not os.getenv("GEMINI_API_KEY"):
+                raise GraphitiConfigurationError(
+                    "GEMINI_API_KEY must be set in environment variables if cross_encoder is not provided.",
+                    invalid_config={"GEMINI_API_KEY": False}
+                )
+            cross_encoder = GeminiRerankerClient()
 
         return GraphitiClient.from_connections(
             driver=driver,

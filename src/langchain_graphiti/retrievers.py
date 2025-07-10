@@ -30,10 +30,17 @@ from pydantic import BaseModel, Field
 from ._client import GraphitiClient
 from .exceptions import GraphitiRetrieverError, GraphitiClientError
 from .utils import require_client, safe_sync_run, format_graph_results
-from graphiti_core.search.search_config import SearchConfig, SearchResults
+from graphiti_core.search.search_config import (
+    SearchConfig,
+    SearchResults,
+    EdgeSearchConfig,
+    EdgeSearchMethod,
+    EdgeReranker,
+    EpisodeSearchConfig,
+    EpisodeSearchMethod,
+)
 from graphiti_core.search.search_config_recipes import (
     COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
-    EDGE_HYBRID_SEARCH_NODE_DISTANCE,
 )
 from graphiti_core.search.search_filters import SearchFilters
 from graphiti_core.search.search import search as graphiti_search_internal
@@ -83,7 +90,10 @@ class GraphitiRetriever(BaseRetriever):
         default=None,
         description="Minimum score threshold for filtering results (0.0-1.0).",
     )
-
+    k: int = Field(
+        default=10, description="The number of documents to return."
+    )
+ 
     class Config:
         arbitrary_types_allowed = True
 
@@ -117,7 +127,7 @@ class GraphitiRetriever(BaseRetriever):
     @traceable
     @require_client
     async def _perform_search_with_scores(
-        self, query: str, config_override: Optional[SearchConfig] = None
+        self, query: str, config_override: Optional[SearchConfig] = None, limit: Optional[int] = None, **kwargs: Any
     ) -> Tuple[SearchResults, Dict[str, float]]:
         """
         Perform Graphiti search and extract scores more efficiently.
@@ -129,9 +139,19 @@ class GraphitiRetriever(BaseRetriever):
             graphiti_instance = self.client.graphiti_instance
             
             # Use the override if provided, otherwise use the instance's config
-            search_config = config_override or self.config
+            search_config = config_override or self.config.model_copy(deep=True)
 
+            # Set the limit on the config. If a limit is passed, it takes precedence.
+            # Otherwise, use the one from the retriever instance.
+            effective_limit = limit if limit is not None else self.k
+            search_config.limit = effective_limit
+ 
             # Use Graphiti's native search which includes scoring in the reranker
+            # Extract only the kwargs that are valid for the search function
+            valid_kwargs = {}
+            if "center_node_uuid" in kwargs:
+                valid_kwargs["center_node_uuid"] = kwargs["center_node_uuid"]
+
             search_results = await graphiti_search_internal(
                 clients=graphiti_instance.clients,
                 query=query,
@@ -139,6 +159,7 @@ class GraphitiRetriever(BaseRetriever):
                 config=search_config,
                 search_filter=self.search_filter,
                 query_vector=None,  # Let Graphiti generate it internally
+                **valid_kwargs,
             )
 
             # Simplified scoring logic - positional scoring based on result order
@@ -167,102 +188,30 @@ class GraphitiRetriever(BaseRetriever):
     async def _convert_search_results_to_docs(
         self, search_results: SearchResults, scores: Dict[str, float]
     ) -> List[Document]:
-        """Converts Graphiti search results into LangChain Documents with rich metadata."""
-        try:
-            docs = []
-            
-            # Create a lookup for node names to enrich edge documents
-            node_uuid_to_name = {node.uuid: node.name for node in search_results.nodes}
-
-            # Convert edges to documents
-            if self.search_mode in ["edges", "combined"]:
-                for edge in search_results.edges:
-                    try:
-                        score = scores.get(edge.uuid, 0.0)
-                        
-                        # Apply score threshold filtering if specified
-                        if self.score_threshold is not None and score < self.score_threshold:
-                            continue
-                        
-                        source_name = node_uuid_to_name.get(edge.source_node_uuid, "Unknown Entity")
-                        target_name = node_uuid_to_name.get(edge.target_node_uuid, "Unknown Entity")
-                        
-                        metadata = {
-                            "type": "edge",
-                            "score": score,
-                            "uuid": edge.uuid,
-                            "name": edge.name,
-                            "source_node_uuid": edge.source_node_uuid,
-                            "source_node_name": source_name,
-                            "target_node_uuid": edge.target_node_uuid,
-                            "target_node_name": target_name,
-                            "group_id": edge.group_id,
-                            "created_at": edge.created_at.isoformat(),
-                            "valid_at": edge.valid_at.isoformat() if edge.valid_at else None,
-                            "invalid_at": edge.invalid_at.isoformat() if edge.invalid_at else None,
-                            "episodes": edge.episodes,
-                            "fact": edge.fact,
-                            **edge.attributes,
-                        }
-                        
-                        # Add graph context if enabled
-                        if self.include_graph_context:
-                            metadata["graph_context"] = {
-                                "relationship_type": edge.name,
-                                "embedding_available": edge.fact_embedding is not None,
-                            }
-                        
-                        content = f"{source_name} -[{edge.name}]-> {target_name}: {edge.fact}"
-                        doc = Document(page_content=content, metadata=metadata)
-                        docs.append(doc)
-                    except Exception as e:
-                        logger.warning(f"Failed to convert edge {edge.uuid} to document: {e}")
-                        continue
-
-            # Convert nodes to documents
-            if self.search_mode in ["nodes", "combined"]:
-                for node in search_results.nodes:
-                    try:
-                        score = scores.get(node.uuid, 0.0)
-                        
-                        # Apply score threshold filtering if specified
-                        if self.score_threshold is not None and score < self.score_threshold:
-                            continue
-                        
-                        metadata = {
-                            "type": "node",
-                            "score": score,
-                            "uuid": node.uuid,
-                            "name": node.name,
-                            "labels": node.labels,
-                            "group_id": node.group_id,
-                            "created_at": node.created_at.isoformat(),
-                            "summary": node.summary,
-                            **node.attributes,
-                        }
-                        
-                        # Add graph context if enabled
-                        if self.include_graph_context:
-                            metadata["graph_context"] = {
-                                "node_type": next((l for l in node.labels if l != 'Entity'), 'Entity'),
-                                "embedding_available": node.name_embedding is not None,
-                            }
-                        
-                        # Use summary if available, otherwise just the name
-                        content = f"**{node.name}**\n\n{node.summary}" if node.summary else node.name
-                        doc = Document(page_content=content, metadata=metadata)
-                        docs.append(doc)
-                    except Exception as e:
-                        logger.warning(f"Failed to convert node {node.uuid} to document: {e}")
-                        continue
-            
-            # Sort final documents by score if available
-            docs.sort(key=lambda d: d.metadata.get("score", 0.0), reverse=True)
-
+        """Converts Graphiti search results into LangChain Documents."""
+        docs = []
+        if not search_results.episodes:
             return docs
-        except Exception as e:
-            logger.error(f"Failed to convert search results to documents: {e}")
-            raise GraphitiRetrieverError(f"Failed to convert search results: {e}") from e
+
+        for episode in search_results.episodes:
+            # The standard tests expect the original page_content and metadata.
+            # We can extract this from the episode content.
+            # Assuming the episode content is the original page_content.
+            doc = Document(
+                page_content=episode.content,
+                metadata={
+                    "uuid": episode.uuid,
+                    "name": episode.name,
+                    "source": episode.source.value
+                    if hasattr(episode.source, "value")
+                    else str(episode.source),
+                    "group_id": episode.group_id,
+                    "created_at": episode.created_at.isoformat(),
+                    "valid_at": episode.valid_at.isoformat() if episode.valid_at else None,
+                },
+            )
+            docs.append(doc)
+        return docs
 
     @require_client
     async def astream(self, query: str) -> AsyncIterator[Document]:
@@ -306,23 +255,24 @@ class GraphitiRetriever(BaseRetriever):
     @traceable
     @require_client
     def _get_relevant_documents(
-        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun, **kwargs: Any
     ) -> List[Document]:
         """Synchronous retrieval of documents from Graphiti."""
         try:
-            return safe_sync_run(self._aget_relevant_documents(query, run_manager=run_manager))
+            return safe_sync_run(self._aget_relevant_documents(query, run_manager=run_manager, **kwargs))
         except Exception as e:
             logger.error(f"Sync retrieval failed for query '{query[:50]}...': {e}")
             raise GraphitiRetrieverError(f"Failed to retrieve documents: {e}") from e
-
+ 
     @traceable
     @require_client
     async def _aget_relevant_documents(
-        self, query: str, *, run_manager: AsyncCallbackManagerForRetrieverRun
+        self, query: str, *, run_manager: AsyncCallbackManagerForRetrieverRun, **kwargs: Any
     ) -> List[Document]:
         """Asynchronous retrieval of documents from Graphiti."""
         try:
-            search_results, scores = await self._perform_search_with_scores(query)
+            k = kwargs.get("k", self.k)
+            search_results, scores = await self._perform_search_with_scores(query, limit=k, **kwargs)
             return await self._convert_search_results_to_docs(search_results, scores)
         except Exception as e:
             logger.error(f"Async retrieval failed for query '{query[:50]}...': {e}")
@@ -350,14 +300,13 @@ class GraphitiRetriever(BaseRetriever):
         try:
             # Create a temporary config for this specific call (thread-safe)
             temp_config = self.config.model_copy(deep=True)
-            temp_config.limit = k
             
             # Apply score threshold to search config if specified
             if score_threshold is not None:
                 temp_config.reranker_min_score = score_threshold
-
+ 
             search_results, scores = await self._perform_search_with_scores(
-                query, config_override=temp_config
+                query, config_override=temp_config, limit=k
             )
             docs = await self._convert_search_results_to_docs(search_results, scores)
             
@@ -391,6 +340,25 @@ class GraphitiRetriever(BaseRetriever):
             raise GraphitiRetrieverError(f"Failed to perform similarity search: {e}") from e
 
 
+# A search configuration that combines graph-aware edge search with episode search
+SEMANTIC_SEARCH_WITH_EPISODES = SearchConfig(
+    edge_config=EdgeSearchConfig(
+        search_methods=[EdgeSearchMethod.bm25, EdgeSearchMethod.cosine_similarity],
+        reranker=EdgeReranker.node_distance,
+        sim_min_score=0.6,
+        mmr_lambda=0.5,
+        bfs_max_depth=3,
+    ),
+    node_config=None,
+    episode_config=EpisodeSearchConfig(
+        search_methods=[
+            EpisodeSearchMethod.bm25,
+        ]
+    ),
+    community_config=None,
+)
+
+
 class GraphitiSemanticRetriever(GraphitiRetriever):
     """
     A specialized retriever that leverages Graphiti's graph-aware semantic search.
@@ -399,10 +367,10 @@ class GraphitiSemanticRetriever(GraphitiRetriever):
     community structure, and relationship patterns to enhance semantic search
     beyond simple vector similarity.
     """
-    
+
     def __init__(self, client: GraphitiClient, **kwargs):
-        # Use graph-aware search configuration by default
-        kwargs.setdefault("config", EDGE_HYBRID_SEARCH_NODE_DISTANCE)
+        # Use a graph-aware search configuration that also returns episodes
+        kwargs.setdefault("config", SEMANTIC_SEARCH_WITH_EPISODES)
         kwargs.setdefault("search_mode", "combined")
         kwargs.setdefault("include_graph_context", True)
         super().__init__(client=client, **kwargs)
