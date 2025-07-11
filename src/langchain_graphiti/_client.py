@@ -231,6 +231,38 @@ class GraphitiClient(BaseModel):
             if isinstance(e, (GraphitiClientError, GraphitiError)):
                 raise
             raise GraphitiConfigurationError(f"Failed to create GraphitiClient: {e}") from e
+    
+    def from_factory(
+        cls,
+        llm_provider: LLMProvider,
+        driver_provider: DriverProvider,
+        llm_config: Union[OpenAIConfig, AzureOpenAIConfig, GeminiConfig, AnthropicConfig, GroqConfig],
+        driver_config: Union[Neo4jConfig, FalkorDBConfig],
+        **kwargs: Any,
+    ) -> "GraphitiClient":
+        """
+        Create a GraphitiClient using the GraphitiClientFactory.
+
+        This method simplifies the creation of a client with the specified
+        providers and configurations.
+
+        Args:
+            llm_provider: The LLM provider to use.
+            driver_provider: The graph database driver to use.
+            llm_config: The configuration for the LLM provider.
+            driver_config: The configuration for the graph driver.
+            **kwargs: Additional arguments for GraphitiClient.from_connections().
+
+        Returns:
+            A configured GraphitiClient instance.
+        """
+        return GraphitiClientFactory.create(
+            llm_provider=llm_provider,
+            driver_provider=driver_provider,
+            llm_config=llm_config,
+            driver_config=driver_config,
+            **kwargs,
+    )
 
     @staticmethod
     def _validate_components(
