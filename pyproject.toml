@@ -33,7 +33,7 @@ nest-asyncio = "*"
 [tool.poetry.extras]
 openai = ["langchain-openai"]
 azure = ["langchain-openai"]
-gemini = ["google-generativeai"]
+gemini = ["google-genai"]
 anthropic = ["anthropic"]
 groq = ["groq"]
 ollama = ["langchain-openai"]
@@ -47,7 +47,7 @@ langchain-tests = "*"
 ruff = "*"
 mypy = "*"
 langchain-openai = {version = "*", optional = true}
-google-generativeai = {version = "*", optional = true}
+google-genai = {version = "*", optional = true}
 anthropic = {version = "*", optional = true}
 groq = {version = "*", optional = true}
 neo4j = {version = "*", optional = true}
