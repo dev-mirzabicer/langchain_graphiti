@@ -48,6 +48,11 @@ Here's a simple example of how to get up and running with `langchain-graphiti`. 
 
 ```python
 import asyncio
+import os
+# Note: This must be set due to Graphiti's limitations. Will be fixed when Graphiti fixes it.
+# Of course, you can set it in ".env" as well, but you must load it before importing langchain_graphiti.
+os.environ["DEFAULT_DATABASE"] = "default_db" 
+
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
@@ -56,8 +61,18 @@ from langchain_graphiti.tools import create_basic_agent_tools
 from langchain_graphiti.config import LLMProvider, DriverProvider, OpenAIConfig, Neo4jConfig
 
 # 1. Configure your providers
-llm_config = OpenAIConfig()  # Assumes OPENAI_API_KEY is in your environment
-driver_config = Neo4jConfig() # Assumes NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD are set
+llm_config = OpenAIConfig(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    model="gpt-4o",  # Use the model you prefer
+    small_model="gpt-3.5-turbo",  # Optional: for smaller tasks
+    embedding_model="text-embedding-3-small",
+    embedding_dim=1536,  # Optional: dimension of the embeddings
+)
+driver_config = Neo4jConfig(
+    uri=os.getenv("NEO4J_URI", "bolt://localhost:7687"),
+    user=os.getenv("NEO4J_USER", "neo4j"),
+    password=os.getenv("NEO4J_PASSWORD", "password")
+)
 
 # 2. Create the GraphitiClient
 # This client manages the connection to your knowledge graph
@@ -74,6 +89,10 @@ tools = create_basic_agent_tools(client)
 
 # 4. Set up your LangChain agent
 llm = ChatOpenAI(model="gpt-4o")
+
+# I recommend using more advanced agents than `ReAct` for production use, but this is a simple example.
+# This is because agents may (rarely) make mistakes during tool calls, but they will get it right in
+# usually the second try.
 agent_executor = create_react_agent(llm, tools)
 
 async def main():

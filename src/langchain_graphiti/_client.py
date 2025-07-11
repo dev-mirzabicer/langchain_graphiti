@@ -96,6 +96,14 @@ class GraphitiClient(BaseModel):
         async with GraphitiClient.from_connections(...) as client:
             # Use client
             pass
+            
+        # Option 4: Using factory method
+        client = GraphitiClient.from_factory(
+            llm_provider=LLMProvider.OPENAI,
+            driver_provider=DriverProvider.NEO4J,
+            llm_config=OpenAIConfig(...),
+            driver_config=Neo4jConfig(...),
+        )
         ```
     """
 
