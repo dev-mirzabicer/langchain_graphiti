@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "langchain-graphiti"
-version = "0.1.0"
+version = "0.1.1"
 description = "LangChain integration for the Graphiti knowledge graph system."
 authors = ["Mirza Bicer <mirzabicer.dev@gmail.com>"]
 license = "MIT"
